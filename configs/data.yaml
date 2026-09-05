@@ -6,7 +6,8 @@ dataset:
   language: de
 
 paths:
-  raw_frames_root: ${HOME}/pgat-cache/raw
+  # Frames ship as PHOENIX-2014-T/features/fullFrame-210x260px/<split>/<sample>/*.png
+  raw_frames_root: ${HOME}/pgat-cache/raw/PHOENIX-2014-T/features/fullFrame-210x260px
   manifest: ${HOME}/pgat-cache/manifest/phoenix14t_cached.pkl
   feature_root: ${HOME}/pgat-cache/features
   hf_cache: ${HOME}/pgat-cache/hf
