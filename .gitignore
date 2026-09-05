@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# uv / conda
+uv.lock
+.python-version
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Data and model artifacts — NEVER commit these
+# Anchored to project root so we don't accidentally hide src/pgat_length/data/
+/data/
+/outputs/
+/logs/
+*.pt
+*.ckpt
+*.safetensors
+*.bin
+*.npz
+*.pkl
+*.h5
+
+# Feature caches (top-level runtime dirs only, not source modules)
+/pgat-cache/
+/features/
+
+# Predictions and metrics (regeneratable)
+*.jsonl
+predictions/
+
+# Hugging Face cache
+.cache/
+hf_cache/
+
+# Slurm outputs
+*.out
+*.err
+
+# Local overrides
+.env
+local_settings.yaml

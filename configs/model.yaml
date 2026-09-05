@@ -1,0 +1,38 @@
+# PGAT-v2 encoder + variable-length prefix + mBART decoder.
+
+encoder:
+  spatial_dim: 768                 # DINOv2 base output
+  motion_dim: 768
+  pose_descriptor_dim: 64
+  articulator_views: 4             # global + left hand + right hand + mouth
+  hidden_dim: 512
+  transformer_layers: 4
+  transformer_heads: 8
+  ffn_dim: 2048
+  dropout: 0.1
+
+  # Variable-length temporal token allocation.
+  variable_prefix:
+    frames_per_token: 8            # K_temporal = clamp(round(F/8), min, max)
+    k_temporal_min: 12
+    k_temporal_max: 40
+
+  # Fixed summary tokens (unchanged from PGAT-v1).
+  articulator_queries: 8
+  global_queries: 4
+
+  dinov2:
+    model_name: facebook/dinov2-base
+    unfreeze_last_n_blocks: 2      # partial unfreeze; 0 = fully frozen
+    unfreeze_learning_rate: 1.0e-5
+
+decoder:
+  model_name: facebook/mbart-large-cc25
+  hidden_dim: 1024                 # mBART encoder/decoder hidden size
+  freeze_encoder: false
+  freeze_decoder: false
+
+projection:
+  # Linear + LayerNorm from PGAT hidden_dim (512) to mBART hidden_dim (1024).
+  bias: true
+  layernorm: true

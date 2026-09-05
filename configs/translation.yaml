@@ -1,0 +1,44 @@
+# Stage 2: full translation fine-tuning of mBART with PGAT variable-length prefix.
+
+seed: 42
+
+training:
+  epochs: 20
+  effective_batch_size: 24
+  micro_batch: 3
+  grad_accum: 8
+  learning_rate: 3.0e-5            # mBART fine-tuning; encoder + decoder trainable
+  encoder_learning_rate: 3.0e-5
+  decoder_learning_rate: 3.0e-5
+  pgat_learning_rate: 1.0e-4       # PGAT encoder trains faster than mBART
+  dinov2_learning_rate: 1.0e-5     # partial unfreeze (last N blocks)
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  scheduler: cosine
+  max_target_tokens: 96
+  label_smoothing: 0.1
+  mixed_precision: bf16
+  gradient_checkpointing: true
+
+generation:
+  max_new_tokens: 96
+  num_beams: 3                     # match GFSLT/GASLT protocol
+  no_repeat_ngram_size: 3
+  length_penalty: 1.0
+  early_stopping: true
+
+warm_start:
+  # Load PGAT encoder weights from stage 1 alignment best.pt (required).
+  alignment_checkpoint: ${HOME}/outputs/alignment/alignment_best.pt
+  strict: true
+
+early_stopping:
+  metric: dev_loss
+  mode: min
+  patience: 4
+
+checkpoint:
+  save_best_only: true             # NO last.pt
+  best_filename: translation_best.pt
+  # Never save mBART or DINOv2 base weights; only trainable deltas.
+  save_base_weights: false

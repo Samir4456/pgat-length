@@ -1,0 +1,19 @@
+# Dataset paths and split policy.
+# All paths are cluster paths under $HOME. Override locally as needed.
+
+dataset:
+  name: phoenix14t
+  language: de
+
+paths:
+  raw_frames_root: ${HOME}/pgat-cache/raw
+  manifest: ${HOME}/pgat-cache/manifest/phoenix14t_cached.pkl
+  feature_root: ${HOME}/pgat-cache/features
+  hf_cache: ${HOME}/pgat-cache/hf
+  output_root: ${HOME}/outputs
+
+splits:
+  train_size: 7096
+  dev_size: 519
+  test_size: 642
+  test_locked: true         # test may only be used after final DEV freeze

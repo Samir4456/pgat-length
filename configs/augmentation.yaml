@@ -1,0 +1,24 @@
+# Temporal data augmentation applied during training only.
+# Inference and evaluation are deterministic.
+
+training_augmentation:
+  enabled: true
+
+  # Random start within the first fraction of the video.
+  random_start:
+    enabled: true
+    max_start_fraction: 0.20
+
+  # Independent frame-drop (before sampling into segments).
+  frame_drop:
+    enabled: true
+    probability: 0.10
+    min_remaining_fraction: 0.60
+
+  # Small temporal jitter on segment anchors.
+  temporal_jitter:
+    enabled: true
+    max_jitter_frames: 2
+
+inference_augmentation:
+  enabled: false                   # never augment DEV or TEST
