@@ -192,6 +192,119 @@ def validate_saved_plan_shard(
     return metadata
 
 
+def _validate_feature_arrays(bank: str, arrays: Mapping[str, Any], sample_count: int) -> None:
+    import numpy as np
+
+    if bank not in FEATURE_ARRAY_CONTRACTS:
+        raise ValueError(f"Unsupported feature bank: {bank}")
+    contracts = FEATURE_ARRAY_CONTRACTS[bank]
+    missing = sorted(set(contracts).difference(arrays))
+    extra = sorted(set(arrays).difference(contracts))
+    if missing or extra:
+        raise ValueError(f"{bank} keys mismatch; missing={missing}, extra={extra}")
+    for name, (tail_shape, dtype_name) in contracts.items():
+        value = np.asarray(arrays[name])
+        expected_shape = (sample_count, *tail_shape)
+        if value.shape != expected_shape:
+            raise ValueError(f"{name} shape must be {expected_shape}, got {value.shape}")
+        if value.dtype.name != dtype_name:
+            raise ValueError(f"{name} dtype must be {dtype_name}, got {value.dtype.name}")
+        if np.issubdtype(value.dtype, np.floating) and not np.isfinite(value).all():
+            raise ValueError(f"{name} contains non-finite values")
+    if bank == "spatial":
+        features = np.asarray(arrays["spatial_features"])
+        valid = np.asarray(arrays["spatial_valid"])
+        if np.any(features[~valid] != 0):
+            raise ValueError("Invalid spatial views must contain exact zeros")
+    elif bank == "motion":
+        centers = np.asarray(arrays["motion_centers"], dtype=np.float32)
+        if np.any(centers < 0) or np.any(centers > 1):
+            raise ValueError("Motion centers must be normalized to [0, 1]")
+        if np.any(np.diff(centers, axis=1) <= 0):
+            raise ValueError("Motion centers must be strictly increasing")
+
+
+def validate_saved_feature_shard(
+    shard_path: Path,
+    bank: str,
+    expected_samples: int | None = None,
+    expected_metadata: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    from safetensors import safe_open
+
+    with safe_open(shard_path, framework="np") as handle:
+        arrays = {name: handle.get_tensor(name) for name in handle.keys()}
+        metadata = handle.metadata() or {}
+    sample_count = expected_samples
+    if sample_count is None:
+        sample_count = int(metadata.get("sample_count", -1))
+    _validate_feature_arrays(bank, arrays, sample_count)
+    if expected_metadata is not None and metadata != dict(expected_metadata):
+        raise ValueError(f"feature shard metadata mismatch: {shard_path}")
+    return metadata
+
+
+def write_feature_shard(
+    output_root: Path,
+    bank: str,
+    split: str,
+    shard_number: int,
+    uids: Sequence[str],
+    arrays: Mapping[str, Any],
+    config_fingerprint: str,
+    plan_fingerprint: str,
+    model_name: str,
+    overwrite: bool = False,
+) -> tuple[Path, bool]:
+    import numpy as np
+    import torch
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    if bank not in FEATURE_ARRAY_CONTRACTS:
+        raise ValueError(f"Unsupported feature bank: {bank}")
+    if not split or any(character in split for character in "\\/:"):
+        raise ValueError(f"unsafe split name: {split!r}")
+    if shard_number < 0:
+        raise ValueError("shard_number must be non-negative")
+    if not uids or len(set(uids)) != len(uids):
+        raise ValueError("uids must be non-empty and unique within a shard")
+    _validate_feature_arrays(bank, arrays, len(uids))
+
+    split_root = output_root / split
+    split_root.mkdir(parents=True, exist_ok=True)
+    shard_path = split_root / f"{bank}-{shard_number:05d}.safetensors"
+    metadata = {
+        "format_version": "2",
+        "bank": bank,
+        "split": split,
+        "sample_count": str(len(uids)),
+        "k_max": str(K_MAX),
+        "config_fingerprint": config_fingerprint,
+        "plan_fingerprint": plan_fingerprint,
+        "uid_fingerprint": uid_order_fingerprint(uids),
+        "model_name": model_name,
+    }
+    if shard_path.exists() and not overwrite:
+        with safe_open(shard_path, framework="pt", device="cpu") as handle:
+            existing = handle.metadata() or {}
+            keys = set(handle.keys())
+        if existing == metadata and keys == set(FEATURE_ARRAY_CONTRACTS[bank]):
+            validate_saved_feature_shard(shard_path, bank, len(uids), metadata)
+            return shard_path, False
+        raise FileExistsError(f"existing feature shard does not match request: {shard_path}")
+
+    tensors = {
+        name: torch.from_numpy(np.ascontiguousarray(np.asarray(arrays[name])))
+        for name in FEATURE_ARRAY_CONTRACTS[bank]
+    }
+    temporary_path = shard_path.with_name(shard_path.name + ".partial")
+    save_file(tensors, temporary_path, metadata=metadata)
+    validate_saved_feature_shard(temporary_path, bank, len(uids), metadata)
+    os.replace(temporary_path, shard_path)
+    return shard_path, True
+
+
 def write_jsonl_atomic(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
     """Write a UTF-8 JSONL file through a sibling .partial file."""
 
