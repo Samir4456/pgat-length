@@ -64,6 +64,29 @@ def sha256_fingerprint(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
+# Config sections each bank depends on. Changes outside these sections must
+# NOT invalidate that bank's cached shards.
+PLAN_SECTIONS: tuple[str, ...] = ("sampling", "pose", "storage")
+SPATIAL_SECTIONS: tuple[str, ...] = ("sampling", "pose", "spatial", "storage")
+MOTION_SECTIONS: tuple[str, ...] = ("sampling", "pose", "motion", "storage")
+
+
+def fingerprint_from_sections(
+    data_cfg: Mapping[str, Any],
+    features_cfg: Mapping[str, Any],
+    sections: Sequence[str],
+) -> str:
+    """Fingerprint the given features.yaml sections plus the full data.yaml."""
+    return sha256_fingerprint(
+        {
+            "data": dict(data_cfg),
+            "features": {
+                key: features_cfg[key] for key in sections if key in features_cfg
+            },
+        }
+    )
+
+
 def uid_order_fingerprint(uids: Iterable[str]) -> str:
     digest = hashlib.sha256()
     for uid in uids:

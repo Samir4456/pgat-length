@@ -37,3 +37,13 @@ spatial:
   feature_dim: 768
   views: 4                         # global + left hand + right hand + mouth
   dtype: float16
+
+motion:
+  # 8 fixed motion clips per sample (independent of K_temporal).
+  # TimeSformer produces one pooled 768-D embedding per clip.
+  model_name: facebook/timesformer-base-finetuned-k400
+  feature_dim: 768
+  clips: 8
+  frames_per_clip: 8
+  clip_span: 15
+  dtype: float16

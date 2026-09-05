@@ -44,9 +44,10 @@ from pgat_length.features.plans import VariableKConfig, build_variable_k_plan  #
 from pgat_length.features.pose_plan import extract_selected_landmarks  # noqa: E402
 from pgat_length.features.shards import (  # noqa: E402
     K_MAX,
-    POSITIONS,
     PLAN_ARRAY_CONTRACTS,
-    sha256_fingerprint,
+    PLAN_SECTIONS,
+    POSITIONS,
+    fingerprint_from_sections,
     uid_order_fingerprint,
     validate_saved_plan_shard,
     write_jsonl_atomic,
@@ -169,8 +170,11 @@ def main() -> None:
     args = parse_args()
     data_cfg = load_yaml(args.data_config.resolve())
     features_cfg = load_yaml(args.features_config.resolve())
-    combined_for_fingerprint = {"data": data_cfg, "features": features_cfg}
-    config_fingerprint = sha256_fingerprint(combined_for_fingerprint)
+    combined_for_fingerprint = {
+        "data": data_cfg,
+        "features": {k: features_cfg[k] for k in PLAN_SECTIONS if k in features_cfg},
+    }
+    config_fingerprint = fingerprint_from_sections(data_cfg, features_cfg, PLAN_SECTIONS)
 
     manifest_path = project_or_absolute(PROJECT_ROOT, data_cfg["paths"]["manifest"])
     frames_root = project_or_absolute(PROJECT_ROOT, data_cfg["paths"]["raw_frames_root"])

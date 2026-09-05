@@ -38,7 +38,9 @@ from pgat_length.features.frame_paths import (  # noqa: E402
 from pgat_length.features.plan_reader import PlanBankReader  # noqa: E402
 from pgat_length.features.shards import (  # noqa: E402
     K_MAX,
-    sha256_fingerprint,
+    PLAN_SECTIONS,
+    SPATIAL_SECTIONS,
+    fingerprint_from_sections,
     uid_order_fingerprint,
     validate_saved_feature_shard,
     write_feature_shard,
@@ -128,8 +130,19 @@ def main() -> None:
         raise ValueError("--batch-size must be positive")
     data_cfg = load_yaml(args.data_config.resolve())
     features_cfg = load_yaml(args.features_config.resolve())
-    combined = {"data": data_cfg, "features": features_cfg}
-    config_fingerprint = sha256_fingerprint(combined)
+    # Bank-local fingerprint (this shard's config only) + plan fingerprint
+    # (must match what step 01 recorded). Changes to unrelated bank configs
+    # never invalidate this bank's cache.
+    plan_fingerprint_expected = fingerprint_from_sections(
+        data_cfg, features_cfg, PLAN_SECTIONS
+    )
+    config_fingerprint = fingerprint_from_sections(
+        data_cfg, features_cfg, SPATIAL_SECTIONS
+    )
+    combined = {
+        "data": data_cfg,
+        "features": {k: features_cfg[k] for k in SPATIAL_SECTIONS if k in features_cfg},
+    }
 
     feature_root = project_or_absolute(PROJECT_ROOT, data_cfg["paths"]["feature_root"])
     hf_cache = project_or_absolute(PROJECT_ROOT, data_cfg["paths"]["hf_cache"])
@@ -152,10 +165,11 @@ def main() -> None:
         raise FileNotFoundError(f"plan metadata missing (run step 01 first): {plan_meta_path}")
     plan_metadata = json.loads(plan_meta_path.read_text(encoding="utf-8"))
     plan_fingerprint = str(plan_metadata.get("config_fingerprint", ""))
-    if plan_fingerprint != config_fingerprint:
+    if plan_fingerprint != plan_fingerprint_expected:
         raise RuntimeError(
-            "Plan fingerprint does not match current data+features config. "
-            "Rebuild plans (scripts/01) with matching configs."
+            "Plan fingerprint does not match current data+plan config. "
+            "Rebuild plans (scripts/01) after any change to data.yaml or the "
+            "sampling/pose/storage sections of features.yaml."
         )
 
     reader = PlanBankReader(plan_root, args.split)
