@@ -15,8 +15,9 @@
 
 set -euo pipefail
 
-source /opt/miniconda3/etc/profile.d/conda.sh
-conda activate pgat-length
+export PGAT_ENV="$HOME/.conda/envs/pgat-length"
+export PATH="$PGAT_ENV/bin:$PATH"
+export LD_LIBRARY_PATH="$PGAT_ENV/lib:${LD_LIBRARY_PATH:-}"
 
 cd "$HOME/pgat-length"
 mkdir -p logs "$HOME/outputs/translation"

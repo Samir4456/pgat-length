@@ -11,7 +11,7 @@
 #SBATCH --time=24:00:00
 
 # Usage:
-#   sbatch slurm/build_features.sbatch scripts/01_build_plans.py --split train
+#   sbatch slurm/build_features.sbatch scripts/01_build_plans.py --split train --all
 #   sbatch slurm/build_features.sbatch scripts/02_extract_spatial.py --split train --allow-full
 #   sbatch slurm/build_features.sbatch scripts/03_extract_motion.py --split train --allow-full
 #   sbatch slurm/build_features.sbatch scripts/04_build_text.py --all
@@ -20,13 +20,16 @@
 
 set -euo pipefail
 
-source /opt/miniconda3/etc/profile.d/conda.sh
-conda activate pgat-length
+# Activate pgat-length env directly (compute nodes do NOT have /opt/miniconda3).
+export PGAT_ENV="$HOME/.conda/envs/pgat-length"
+export PATH="$PGAT_ENV/bin:$PATH"
+export LD_LIBRARY_PATH="$PGAT_ENV/lib:${LD_LIBRARY_PATH:-}"
 
 cd "$HOME/pgat-length"
 mkdir -p logs
 
 nvidia-smi
-python -c "import torch; print('CUDA:', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+python -V
+python -c "import torch; print('CUDA:', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
 
 srun python "$@"
