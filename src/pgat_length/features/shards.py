@@ -73,6 +73,7 @@ def sha256_fingerprint(value: Any) -> str:
 PLAN_SECTIONS: tuple[str, ...] = ("sampling", "pose", "storage")
 SPATIAL_SECTIONS: tuple[str, ...] = ("sampling", "pose", "spatial", "storage")
 MOTION_SECTIONS: tuple[str, ...] = ("sampling", "pose", "motion", "storage")
+TEXT_SECTIONS: tuple[str, ...] = ("text", "storage")
 
 
 def fingerprint_from_sections(
@@ -216,6 +217,125 @@ def validate_saved_plan_shard(
     _validate_plan_arrays(arrays, sample_count)
     if expected_metadata is not None and metadata != dict(expected_metadata):
         raise ValueError(f"shard metadata mismatch: {shard_path}")
+    return metadata
+
+
+def text_array_contracts(max_target_tokens: int) -> dict[str, tuple[tuple[int, ...], str]]:
+    """Text bank contracts depend on max_target_tokens (per-run)."""
+    return {
+        "input_ids":      ((max_target_tokens,), "int32"),
+        "attention_mask": ((max_target_tokens,), "bool"),
+        "text_length":    ((),                    "int32"),
+    }
+
+
+def _validate_text_arrays(
+    arrays: Mapping[str, Any], sample_count: int, max_target_tokens: int
+) -> None:
+    import numpy as np
+
+    contracts = text_array_contracts(max_target_tokens)
+    missing = sorted(set(contracts).difference(arrays))
+    extra = sorted(set(arrays).difference(contracts))
+    if missing or extra:
+        raise ValueError(f"text keys mismatch; missing={missing}, extra={extra}")
+    for name, (tail_shape, dtype_name) in contracts.items():
+        value = np.asarray(arrays[name])
+        expected_shape = (sample_count, *tail_shape)
+        if value.shape != expected_shape:
+            raise ValueError(f"{name} shape must be {expected_shape}, got {value.shape}")
+        if value.dtype.name != dtype_name:
+            raise ValueError(f"{name} dtype must be {dtype_name}, got {value.dtype.name}")
+    lengths = np.asarray(arrays["text_length"]).astype(np.int64)
+    if np.any(lengths < 1) or np.any(lengths > max_target_tokens):
+        raise ValueError(f"text_length must lie in [1, {max_target_tokens}]")
+    mask = np.asarray(arrays["attention_mask"]).astype(np.bool_)
+    for index in range(sample_count):
+        real = int(lengths[index])
+        if not mask[index, :real].all():
+            raise ValueError(f"sample {index}: first text_length positions must be valid")
+        if mask[index, real:].any():
+            raise ValueError(f"sample {index}: padded positions must be masked")
+
+
+def write_text_shard(
+    output_root: Path,
+    split: str,
+    shard_number: int,
+    uids: Sequence[str],
+    arrays: Mapping[str, Any],
+    config_fingerprint: str,
+    tokenizer_name: str,
+    max_target_tokens: int,
+    src_lang: str,
+    tgt_lang: str,
+    overwrite: bool = False,
+) -> tuple[Path, bool]:
+    import numpy as np
+    import torch
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    if not split or any(character in split for character in "\\/:"):
+        raise ValueError(f"unsafe split name: {split!r}")
+    if shard_number < 0:
+        raise ValueError("shard_number must be non-negative")
+    if not uids or len(set(uids)) != len(uids):
+        raise ValueError("uids must be non-empty and unique within a shard")
+    _validate_text_arrays(arrays, len(uids), max_target_tokens)
+
+    split_root = output_root / split
+    split_root.mkdir(parents=True, exist_ok=True)
+    shard_path = split_root / f"text-{shard_number:05d}.safetensors"
+    metadata = {
+        "format_version": "2",
+        "bank": "text",
+        "split": split,
+        "sample_count": str(len(uids)),
+        "max_target_tokens": str(max_target_tokens),
+        "tokenizer_name": tokenizer_name,
+        "src_lang": src_lang,
+        "tgt_lang": tgt_lang,
+        "config_fingerprint": config_fingerprint,
+        "uid_fingerprint": uid_order_fingerprint(uids),
+    }
+    if shard_path.exists() and not overwrite:
+        with safe_open(shard_path, framework="pt", device="cpu") as handle:
+            existing = handle.metadata() or {}
+            keys = set(handle.keys())
+        if existing == metadata and keys == set(text_array_contracts(max_target_tokens)):
+            return shard_path, False
+        raise FileExistsError(f"existing text shard does not match request: {shard_path}")
+
+    contracts = text_array_contracts(max_target_tokens)
+    tensors = {
+        name: torch.from_numpy(np.ascontiguousarray(np.asarray(arrays[name])))
+        for name in contracts
+    }
+    temporary_path = shard_path.with_name(shard_path.name + ".partial")
+    save_file(tensors, temporary_path, metadata=metadata)
+    validate_saved_text_shard(temporary_path, len(uids), max_target_tokens, metadata)
+    os.replace(temporary_path, shard_path)
+    return shard_path, True
+
+
+def validate_saved_text_shard(
+    shard_path: Path,
+    expected_samples: int | None,
+    max_target_tokens: int,
+    expected_metadata: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    from safetensors import safe_open
+
+    with safe_open(shard_path, framework="np") as handle:
+        arrays = {name: handle.get_tensor(name) for name in handle.keys()}
+        metadata = handle.metadata() or {}
+    sample_count = expected_samples
+    if sample_count is None:
+        sample_count = int(metadata.get("sample_count", -1))
+    _validate_text_arrays(arrays, sample_count, max_target_tokens)
+    if expected_metadata is not None and metadata != dict(expected_metadata):
+        raise ValueError(f"text shard metadata mismatch: {shard_path}")
     return metadata
 
 

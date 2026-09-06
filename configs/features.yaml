@@ -49,3 +49,11 @@ motion:
   frames_per_clip: 8
   clip_span: 15
   dtype: float16
+
+text:
+  # mBART tokenizer cache for target German references.
+  # Independent of the visual banks. Runs on CPU; tiny output (~5 MB total).
+  model_name: facebook/mbart-large-cc25
+  src_lang: de_DE
+  tgt_lang: de_DE
+  max_target_tokens: 96            # matches translation.yaml.training.max_target_tokens
