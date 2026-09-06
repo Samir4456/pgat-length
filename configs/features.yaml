@@ -5,7 +5,9 @@ sampling:
   positions: 64                    # deterministic source-frame positions (FIXED)
   frames_per_token: 8              # K_temporal = clamp(round(F / 8), k_min, k_max)
   k_temporal_min: 12
-  k_temporal_max: 40               # must match shards.K_MAX
+  # Hard upper bound: POSITIONS / minimum_segment_width = 64 / 2 = 32.
+  # DEV samples top out at F ~= 250 which yields K ~= 31, so this is not restrictive.
+  k_temporal_max: 32               # must match shards.K_MAX
   minimum_segment_width: 2
   uniform_floor: 0.05
   valid_pose_fraction_threshold: 0.35

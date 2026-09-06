@@ -21,7 +21,11 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 POSITIONS: int = 64
-K_MAX: int = 40
+# Hard bound: build_compact_pose_plan requires K * minimum_segment_width <= POSITIONS,
+# so with minimum_segment_width=2 the maximum K is 32. The DEV distribution
+# (max source_num_frames ~= 250) tops out at K ~= 31 naturally, so this bound
+# does not truncate any real sample.
+K_MAX: int = 32
 
 # Per-sample tail shapes. Batched arrays have leading dim = sample_count.
 PLAN_ARRAY_CONTRACTS: dict[str, tuple[tuple[int, ...], str]] = {

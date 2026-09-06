@@ -22,7 +22,7 @@ reduce the long-sentence BLEU-4 cliff in gloss-free sign language translation?
 2. Adaptive pose-motion temporal segmentation
    (segment boundaries follow motion energy, not uniform grid).
 3. Variable-length prefix
-   (`K_temporal = clamp(round(source_num_frames / 8), 12, 40)`; total 24-52 tokens).
+   (`K_temporal = clamp(round(source_num_frames / 8), 12, 32)`; total 24-44 tokens).
 4. Partial DINOv2 unfreeze (last two blocks, LR 1e-5).
 5. Temporal data augmentation
    (random start within first 20%, single-frame drop p=0.1, small jitter; train only).

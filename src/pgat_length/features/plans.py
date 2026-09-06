@@ -34,7 +34,7 @@ from pgat_length.features.shards import K_MAX, POSITIONS
 class VariableKConfig:
     frames_per_token: int = 8
     k_min: int = 12
-    k_max: int = K_MAX
+    k_max: int = K_MAX               # capped at 32 by build_compact_pose_plan constraints
     minimum_segment_width: int = 2
     hands_weight: float = 0.60
     body_weight: float = 0.25

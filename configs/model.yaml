@@ -15,7 +15,7 @@ encoder:
   variable_prefix:
     frames_per_token: 8            # K_temporal = clamp(round(F/8), min, max)
     k_temporal_min: 12
-    k_temporal_max: 40
+    k_temporal_max: 32             # hard-capped by POSITIONS/minimum_segment_width
 
   # Fixed summary tokens (unchanged from PGAT-v1).
   articulator_queries: 8
