@@ -307,6 +307,10 @@ def train_translation(
         flush=True,
     )
 
+    total_steps_all = len(train_loader) * training.epochs
+    log_every = max(1, len(train_loader) // 20)  # ~20 log lines per epoch
+    global_step = 0
+
     for epoch in range(1, training.epochs + 1):
         model.train()
         total_loss = 0.0
@@ -314,6 +318,8 @@ def train_translation(
         n_micro = 0
         optimizer.zero_grad(set_to_none=True)
         start = time.monotonic()
+        window_loss = 0.0
+        window_n = 0
 
         for step, batch in enumerate(train_loader):
             batch = batch_to_device(batch, device)
@@ -326,13 +332,30 @@ def train_translation(
             (loss / training.grad_accum).backward()
             total_loss += stats["loss"]
             total_acc += stats["token_acc"]
+            window_loss += stats["loss"]
+            window_n += 1
             n_micro += 1
+            global_step += 1
 
             if (step + 1) % training.grad_accum == 0:
                 torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+
+            # Live per-step logging.
+            if (step + 1) % log_every == 0:
+                elapsed = max(time.monotonic() - start, 1e-6)
+                samples_per_s = (step + 1) * training.micro_batch / elapsed
+                lr = optimizer.param_groups[0]["lr"]
+                print(
+                    f"  e{epoch:02d} step {step+1:4d}/{len(train_loader)} "
+                    f"loss={(window_loss / max(1, window_n)):.4f} "
+                    f"lr={lr:.2e} {samples_per_s:.1f}samp/s",
+                    flush=True,
+                )
+                window_loss = 0.0
+                window_n = 0
 
         # Flush remainder if drop_last happens to leave leftover.
         if (step + 1) % training.grad_accum != 0:
