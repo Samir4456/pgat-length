@@ -35,10 +35,14 @@ def corpus_token_count(text: str) -> int:
 
 
 def bin_label(count: int) -> str:
+    if count < 1:
+        raise ValueError(f"reference length {count} must be positive")
     for item in BIN_EDGES:
         if item.lower <= count <= item.upper:
             return item.label
-    raise ValueError(f"reference length {count} outside [1, 32]")
+    # Anything longer than the top bin still bins into the top bin. The
+    # exploratory DEV split had one 33-token reference; TEST tops out at 31.
+    return BIN_EDGES[-1].label
 
 
 def per_bin_metrics(records: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
