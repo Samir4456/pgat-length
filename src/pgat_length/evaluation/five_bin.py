@@ -1,14 +1,58 @@
-"""Five-bin reference-length analysis (paper-compatible).
+"""Paper-compatible five-bin reference-length analysis.
 
-Bins by whitespace-separated reference tokens:
-    1-6, 7-12, 13-18, 19-24, 25-31 (paper) or 25-32 (DEV widened by one).
-
-Public API (to implement):
-- BIN_EDGES = (("1-6",1,6), ("7-12",7,12), ("13-18",13,18),
-               ("19-24",19,24), ("25-32",25,32))
-- def bin_label(count: int) -> str
-- def per_bin_metrics(records: Sequence[dict]) -> dict[str, dict[str, Any]]
-- def render_bin_table(per_bin: dict) -> pd.DataFrame
+Bins:
+    1-6, 7-12, 13-18, 19-24, 25-32
+by whitespace-separated corpus tokens on the raw reference. The last bin
+extends to 32 to cover DEV samples that just cross 31.
 """
 
-raise NotImplementedError("pgat_length.evaluation.five_bin: implement in step 06")
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
+
+from pgat_length.evaluation.metrics import corpus_metrics
+
+
+@dataclass(frozen=True)
+class LengthBin:
+    label: str
+    lower: int
+    upper: int
+
+
+BIN_EDGES: tuple[LengthBin, ...] = (
+    LengthBin("1-6", 1, 6),
+    LengthBin("7-12", 7, 12),
+    LengthBin("13-18", 13, 18),
+    LengthBin("19-24", 19, 24),
+    LengthBin("25-32", 25, 32),
+)
+
+
+def corpus_token_count(text: str) -> int:
+    return len(str(text).strip().split())
+
+
+def bin_label(count: int) -> str:
+    for item in BIN_EDGES:
+        if item.lower <= count <= item.upper:
+            return item.label
+    raise ValueError(f"reference length {count} outside [1, 32]")
+
+
+def per_bin_metrics(records: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {b.label: [] for b in BIN_EDGES}
+    for record in records:
+        count = corpus_token_count(str(record["reference"]))
+        grouped[bin_label(count)].append(record)
+    result: dict[str, dict[str, Any]] = {}
+    for item in BIN_EDGES:
+        values = grouped[item.label]
+        if not values:
+            continue
+        m = corpus_metrics(values)
+        m["minimum_corpus_tokens"] = item.lower
+        m["maximum_corpus_tokens"] = item.upper
+        result[item.label] = m
+    return result
