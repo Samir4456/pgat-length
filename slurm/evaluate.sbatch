@@ -25,4 +25,4 @@ mkdir -p logs "$HOME/outputs/predictions"
 
 nvidia-smi
 
-srun python scripts/07_evaluate_dev.py "$@"
+python scripts/07_evaluate_dev.py "$@"

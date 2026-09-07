@@ -25,4 +25,4 @@ mkdir -p logs "$HOME/outputs/alignment"
 nvidia-smi
 python -c "import torch; print('CUDA:', torch.cuda.is_available())"
 
-srun python scripts/05_train_alignment.py "$@"
+python scripts/05_train_alignment.py "$@"

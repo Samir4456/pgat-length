@@ -25,4 +25,4 @@ mkdir -p logs "$HOME/outputs/translation"
 nvidia-smi
 python -c "import torch; print('CUDA:', torch.cuda.is_available())"
 
-srun python scripts/06_train_translation.py "$@"
+python scripts/06_train_translation.py "$@"
