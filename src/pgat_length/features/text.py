@@ -44,19 +44,19 @@ def tokenize_translation(
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Return (input_ids, attention_mask, text_length) padded to max_target_tokens.
 
-    mBART's convention for the target side is to open the ids with the language
-    code token. We use the tokenizer's as_target_tokenizer context so the
-    correct language id is prepended and the eos is appended.
+    Uses the modern ``text_target=`` keyword so the tokenizer prepends the
+    target language code and appends the eos automatically. This replaces the
+    deprecated ``as_target_tokenizer()`` context manager (removed in
+    transformers >= 4.42).
     """
-    with tokenizer.as_target_tokenizer():
-        encoded = tokenizer(
-            text,
-            padding="max_length",
-            truncation=True,
-            max_length=max_target_tokens,
-            return_tensors="np",
-            return_attention_mask=True,
-        )
+    encoded = tokenizer(
+        text_target=text,
+        padding="max_length",
+        truncation=True,
+        max_length=max_target_tokens,
+        return_tensors="np",
+        return_attention_mask=True,
+    )
     input_ids = encoded["input_ids"][0].astype(np.int32)
     attention_mask = encoded["attention_mask"][0].astype(np.bool_)
     text_length = int(attention_mask.sum())
