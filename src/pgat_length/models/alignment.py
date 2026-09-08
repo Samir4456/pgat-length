@@ -35,6 +35,11 @@ from pgat_length.models.global_summary import GlobalSummaryAttention
 from pgat_length.models.tokenizer import EncoderConfig, PgatVariableTokenizer
 
 
+# NOTE: The mBART text-encoder classes below are the original stage-1 recipe.
+# The mpnet variants at the bottom of this file (MpnetAlignmentModel) are the
+# alternative used by configs/alignment_mpnet.yaml + scripts/17_build_text_mpnet.py.
+
+
 @dataclass(frozen=True)
 class AlignmentConfig:
     encoder: EncoderConfig
@@ -195,3 +200,79 @@ class InfoNceWithHardNegatives(nn.Module):
             "acc_t2v": float(t2v_acc),
         }
         return total, stats
+
+
+# ---------------------------------------------------------------------------
+# MPNet alignment variant.
+# Text side reads precomputed 768-D sentence embeddings from the batch key
+# `mpnet_embedding` instead of running an mBART encoder online. This is the
+# path activated by configs/alignment_mpnet.yaml (Option 3 of the recovery
+# experiments -- swap the alignment text encoder for a small dedicated
+# sentence-embedder while keeping the mBART / Qwen decoder untouched at
+# stage 2).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MpnetAlignmentConfig:
+    encoder: EncoderConfig
+    text_embedding_dim: int
+    alignment_dim: int
+    articulator_queries: int = 8
+    global_queries: int = 4
+
+
+class MpnetAlignmentModel(nn.Module):
+    """Alignment model using a precomputed mpnet embedding as the text side."""
+
+    def __init__(self, config: MpnetAlignmentConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.tokenizer = PgatVariableTokenizer(config.encoder)
+        self.articulator = BiasedArticulatorAttention(
+            hidden_dim=config.encoder.hidden_dim,
+            num_queries=config.articulator_queries,
+            num_heads=config.encoder.transformer_heads,
+            dropout=config.encoder.dropout,
+        )
+        self.global_summary = GlobalSummaryAttention(
+            hidden_dim=config.encoder.hidden_dim,
+            num_queries=config.global_queries,
+            num_heads=config.encoder.transformer_heads,
+            dropout=config.encoder.dropout,
+        )
+        self.video_projection = nn.Sequential(
+            nn.LayerNorm(config.encoder.hidden_dim),
+            nn.Linear(config.encoder.hidden_dim, config.alignment_dim, bias=True),
+        )
+        self.text_projection = nn.Sequential(
+            nn.LayerNorm(config.text_embedding_dim),
+            nn.Linear(config.text_embedding_dim, config.alignment_dim, bias=True),
+        )
+
+    def encode_video(self, batch: dict) -> torch.Tensor:
+        temporal_tokens, segment_valid = self.tokenizer(
+            spatial_features=batch["spatial_features"],
+            spatial_valid=batch["spatial_valid"],
+            motion_features=batch["motion_features"],
+            motion_centers=batch["motion_centers"],
+            pose_descriptor=batch["pose_descriptor"],
+            pose_confidence=batch["pose_confidence"],
+            pose_motion=batch["pose_motion"],
+            segment_valid=batch["segment_valid"],
+        )
+        _ = self.articulator(
+            temporal_tokens=temporal_tokens,
+            segment_valid=segment_valid,
+            pose_confidence=batch["pose_confidence"],
+            pose_motion=batch["pose_motion"],
+        )
+        global_tokens = self.global_summary(temporal_tokens, segment_valid)
+        pooled = global_tokens.mean(dim=1)
+        projected = self.video_projection(pooled)
+        return F.normalize(projected, p=2, dim=-1)
+
+    def encode_text(self, mpnet_embedding: torch.Tensor) -> torch.Tensor:
+        """mpnet_embedding: [B, text_embedding_dim] float32."""
+        projected = self.text_projection(mpnet_embedding)
+        return F.normalize(projected, p=2, dim=-1)

@@ -57,3 +57,17 @@ text:
   src_lang: de_DE
   tgt_lang: de_DE
   max_target_tokens: 96            # matches translation.yaml.training.max_target_tokens
+
+text_qwen:
+  # Qwen tokenizer cache for the QLoRA decoder path (scripts/13, 15, 16).
+  # Standalone npz (not integrated with the mBART shard machinery).
+  model_name: Qwen/Qwen2.5-3B-Instruct
+  max_prompt_tokens: 96            # instruction turn (chat template)
+  max_target_tokens: 96            # matches translation_qwen.yaml
+
+text_mpnet:
+  # MPNet sentence-embedding cache for the alignment path (scripts/17, alignment_mpnet.yaml).
+  # One 768-D vector per sample; stored as a single npz per split.
+  model_name: sentence-transformers/all-mpnet-base-v2
+  embedding_dim: 768
+  normalize: false                 # alignment model L2-normalizes after its own projection

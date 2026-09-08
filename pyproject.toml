@@ -30,6 +30,16 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.4",
 ]
+# Optional recovery-experiment stacks. Install with:
+#   uv sync --extra qwen
+#   uv sync --extra mpnet
+qwen = [
+    "peft>=0.11",
+    "bitsandbytes>=0.43",
+]
+mpnet = [
+    "sentence-transformers>=2.7",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

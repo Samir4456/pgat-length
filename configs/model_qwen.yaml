@@ -1,0 +1,37 @@
+# PGAT-length variable-length prefix + Qwen2.5-3B-Instruct (QLoRA) decoder.
+# Video encoder identical to model_v2.yaml; only the decoder block differs.
+# Consumed by scripts/15_train_translation_qwen.py and 16_evaluate_qwen.py.
+
+encoder:
+  spatial_dim: 768
+  motion_dim: 768
+  pose_descriptor_dim: 64
+  articulator_views: 4
+  hidden_dim: 512
+  transformer_layers: 4
+  transformer_heads: 8
+  ffn_dim: 2048
+  dropout: 0.2                       # matches v2
+
+  variable_prefix:
+    frames_per_token: 8
+    k_temporal_min: 12
+    k_temporal_max: 32
+
+  articulator_queries: 8
+  global_queries: 4
+
+  dinov2:
+    model_name: facebook/dinov2-base
+    unfreeze_last_n_blocks: 2
+    unfreeze_learning_rate: 1.0e-5
+
+decoder:
+  model_name: Qwen/Qwen2.5-3B-Instruct
+  hidden_dim: 2048                   # Qwen2.5-3B model dim
+  # freeze_* flags do not apply: base weights are always frozen under QLoRA;
+  # only LoRA adapters + PGAT + projection are trainable.
+
+projection:
+  bias: true
+  layernorm: true

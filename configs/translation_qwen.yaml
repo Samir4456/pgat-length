@@ -1,0 +1,54 @@
+# Stage 2 translation with Qwen2.5-3B QLoRA decoder.
+# Recipe matches PGAT-v1 (pg-adaptor/configs/pgat_main.yaml) so the decoder
+# swap is what changes vs the v2 mBART run, not the QLoRA regime.
+
+seed: 42
+
+qlora:
+  decoder_model: Qwen/Qwen2.5-3B-Instruct
+  quantization: nf4
+  compute_dtype: bfloat16
+  double_quantization: true
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  lora_targets: [q_proj, k_proj, v_proj, o_proj]
+
+training:
+  epochs: 12
+  # Qwen2.5-3B QLoRA on A6000 (48 GiB) with variable prefix pi up to 44 and
+  # target up to 96: micro_batch 1 + grad_accum 8 -> effective 8. Same as
+  # PGAT-v1 pg-adaptor recipe.
+  micro_batch: 1
+  grad_accum: 8
+  pgat_learning_rate: 2.0e-4
+  projection_learning_rate: 2.0e-4
+  lora_learning_rate: 1.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  scheduler: cosine
+  max_target_tokens: 96
+  mixed_precision: bf16
+  gradient_checkpointing: true       # required for QLoRA at this scale
+
+generation:
+  max_new_tokens: 96
+  num_beams: 3
+  no_repeat_ngram_size: 3
+  length_penalty: 1.0
+  early_stopping: true
+
+warm_start:
+  # Reuses the same alignment checkpoint as v2 (same visual encoder shape).
+  alignment_checkpoint: ${HOME}/outputs/alignment/alignment_v2_best.pt
+  strict: true
+
+early_stopping:
+  metric: dev_loss
+  mode: min
+  patience: 3
+
+checkpoint:
+  save_best_only: true
+  best_filename: translation_qwen_best.pt
+  save_base_weights: false

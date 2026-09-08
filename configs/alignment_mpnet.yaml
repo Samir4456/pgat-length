@@ -1,0 +1,35 @@
+# Stage 1 alignment using MPNet sentence embeddings as the text side.
+# Diff vs alignment_v2.yaml:
+#   - text encoder is a cached mpnet vector, not the mBART encoder
+#   - alignment.text_embedding_dim: 1024 (mBART) -> 768 (mpnet)
+#   - checkpoint.best_filename: alignment_v2_best.pt -> alignment_mpnet_best.pt
+
+seed: 42
+
+training:
+  epochs: 30
+  effective_batch_size: 128
+  micro_batch: 16
+  grad_accum: 8
+  learning_rate: 2.0e-5
+  weight_decay: 0.02
+  warmup_ratio: 0.10
+  scheduler: cosine
+  mixed_precision: bf16
+  gradient_checkpointing: true
+
+alignment:
+  loss: infonce_with_hard_negatives
+  temperature: 0.07
+  hard_negative_weight: 0.5
+  video_embedding_dim: 768
+  text_embedding_dim: 768             # mpnet dim (was 1024 for mBART)
+
+early_stopping:
+  metric: v2t_recall_at_1
+  mode: max
+  patience: 8
+
+checkpoint:
+  save_best_only: true
+  best_filename: alignment_mpnet_best.pt
