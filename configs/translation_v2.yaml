@@ -1,0 +1,52 @@
+# Stage 2 translation — tuned to fight overfitting.
+# Diff vs translation.yaml:
+#   - training.weight_decay: 0.01 -> 0.03
+#   - training.encoder_learning_rate: 3e-5 -> 2e-5
+#   - training.decoder_learning_rate: 3e-5 -> 2e-5
+#   - training.warmup_ratio: 0.05 -> 0.10
+#   - training.label_smoothing: 0.1 -> 0.15
+#   - early_stopping.patience: 4 -> 6
+#   - warm_start points at alignment_v2_best.pt
+#   - checkpoint.best_filename: translation_v2_best.pt
+# Encoder dropout should be raised to 0.2 in model.yaml for this run.
+
+seed: 42
+
+training:
+  epochs: 25
+  effective_batch_size: 24
+  micro_batch: 3
+  grad_accum: 8
+  learning_rate: 2.0e-5
+  encoder_learning_rate: 2.0e-5
+  decoder_learning_rate: 2.0e-5
+  pgat_learning_rate: 8.0e-5
+  dinov2_learning_rate: 1.0e-5
+  weight_decay: 0.03
+  warmup_ratio: 0.10
+  scheduler: cosine
+  max_target_tokens: 96
+  label_smoothing: 0.15
+  mixed_precision: bf16
+  gradient_checkpointing: true
+
+generation:
+  max_new_tokens: 96
+  num_beams: 3
+  no_repeat_ngram_size: 3
+  length_penalty: 1.0
+  early_stopping: true
+
+warm_start:
+  alignment_checkpoint: ${HOME}/outputs/alignment/alignment_v2_best.pt
+  strict: true
+
+early_stopping:
+  metric: dev_loss
+  mode: min
+  patience: 6
+
+checkpoint:
+  save_best_only: true
+  best_filename: translation_v2_best.pt
+  save_base_weights: false

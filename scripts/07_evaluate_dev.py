@@ -57,6 +57,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--num-beams", type=int)
     parser.add_argument("--max-new-tokens", type=int)
+    parser.add_argument("--length-penalty", type=float, help="Beam-search length penalty (>1 = longer, <1 = shorter).")
+    parser.add_argument("--no-repeat-ngram-size", type=int)
     return parser.parse_args()
 
 
@@ -77,8 +79,11 @@ def main() -> None:
     generation_cfg = translation_cfg.get("generation", {})
     num_beams = args.num_beams or int(generation_cfg.get("num_beams", 3))
     max_new = args.max_new_tokens or int(generation_cfg.get("max_new_tokens", 96))
-    no_repeat = int(generation_cfg.get("no_repeat_ngram_size", 3))
-    length_penalty = float(generation_cfg.get("length_penalty", 1.0))
+    no_repeat = args.no_repeat_ngram_size or int(generation_cfg.get("no_repeat_ngram_size", 3))
+    length_penalty = (
+        float(args.length_penalty) if args.length_penalty is not None
+        else float(generation_cfg.get("length_penalty", 1.0))
+    )
 
     generate_dev(
         data_config=data_cfg,

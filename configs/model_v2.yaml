@@ -1,0 +1,36 @@
+# PGAT-v2 encoder + variable-length prefix + mBART decoder — tuned dropout.
+# Diff vs model.yaml: encoder.dropout: 0.1 -> 0.2 (fights overfitting).
+
+encoder:
+  spatial_dim: 768
+  motion_dim: 768
+  pose_descriptor_dim: 64
+  articulator_views: 4
+  hidden_dim: 512
+  transformer_layers: 4
+  transformer_heads: 8
+  ffn_dim: 2048
+  dropout: 0.2                       # raised from 0.1
+
+  variable_prefix:
+    frames_per_token: 8
+    k_temporal_min: 12
+    k_temporal_max: 32
+
+  articulator_queries: 8
+  global_queries: 4
+
+  dinov2:
+    model_name: facebook/dinov2-base
+    unfreeze_last_n_blocks: 2
+    unfreeze_learning_rate: 1.0e-5
+
+decoder:
+  model_name: facebook/mbart-large-cc25
+  hidden_dim: 1024
+  freeze_encoder: false
+  freeze_decoder: false
+
+projection:
+  bias: true
+  layernorm: true
