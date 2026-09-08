@@ -1,18 +1,24 @@
 """Render length-curve figures from a pgat-length metrics JSON.
 
-Produces two PNGs suitable for the thesis proposal:
-    1) length_curve_bleu_chrf.png  — BLEU-4 and chrF by reference-length bin,
-       with the PGAT-v1 DEV baseline overlaid for comparison.
-    2) length_calibration.png       — mean generation length vs mean reference
-       length per bin, with the diagonal shown. Documents that pgat-length
-       fixes the PGAT-v1 premature-EOS behaviour.
+Produces (into --output-dir):
+
+  1) length_curve_headline.png   — 3-panel: BLEU-4, chrF, ROUGE-L by
+     reference-length bin. The single figure most proposal-ready.
+  2) length_curve_all.png        — 2x3 grid: BLEU-1..4, chrF, ROUGE-L.
+     Full detail for the appendix.
+  3) length_calibration.png      — mean generation length vs mean reference
+     length per bin, with the y=x diagonal. Documents that pgat-length
+     fixes the PGAT-v1 premature-EOS behaviour.
+
+The PGAT-v1 DEV baseline is overlaid for BLEU-4 and chrF (we have per-bin
+DEV values). ROUGE-L per-bin baseline is approximated from TEST-derived
+numbers (labelled 'PGAT-v1 (TEST-derived)') so it is visually comparable
+but not a strict DEV baseline. BLEU-1..3 per-bin baselines are omitted.
 
 Usage:
     python scripts/10_plot_length_curve.py \\
         --metrics $HOME/outputs/predictions/dev_metrics.json \\
         --output-dir $HOME/outputs/figures
-
-Optional --no-baseline drops the PGAT-v1 lines from the plot.
 """
 
 from __future__ import annotations
@@ -23,35 +29,49 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")            # headless (no display on the cluster)
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-# PGAT-v1 DEV baseline numbers (from the exploratory pg-adaptor project).
-# Bin edges match ours (1-6, 7-12, 13-18, 19-24, 25-32).
+# PGAT-v1 DEV baseline (from the exploratory pg-adaptor project).
 PGAT_V1_DEV_BASELINE: dict[str, dict[str, float]] = {
-    "1-6":   {"samples": 33,  "bleu_4": 19.55, "chrf": 37.19, "mean_reference_words": 4.85,  "mean_generation_words": 5.88},
-    "7-12":  {"samples": 242, "bleu_4": 17.74, "chrf": 35.60, "mean_reference_words": 9.87,  "mean_generation_words": 9.54},
-    "13-18": {"samples": 166, "bleu_4": 4.19,  "chrf": 25.28, "mean_reference_words": 15.19, "mean_generation_words": 12.87},
-    "19-24": {"samples": 58,  "bleu_4": 4.73,  "chrf": 25.63, "mean_reference_words": 20.93, "mean_generation_words": 14.93},
-    "25-32": {"samples": 20,  "bleu_4": 1.32,  "chrf": 21.67, "mean_reference_words": 26.85, "mean_generation_words": 16.05},
+    "1-6":   {"samples": 33,  "bleu_4": 19.55, "chrf": 37.19, "rouge_l_f1": 34.08, "mean_reference_words": 4.85,  "mean_generation_words": 5.88},
+    "7-12":  {"samples": 242, "bleu_4": 17.74, "chrf": 35.60, "rouge_l_f1": 31.62, "mean_reference_words": 9.87,  "mean_generation_words": 9.54},
+    "13-18": {"samples": 166, "bleu_4": 4.19,  "chrf": 25.28, "rouge_l_f1": 21.00, "mean_reference_words": 15.19, "mean_generation_words": 12.87},
+    "19-24": {"samples": 58,  "bleu_4": 4.73,  "chrf": 25.63, "rouge_l_f1": 21.21, "mean_reference_words": 20.93, "mean_generation_words": 14.93},
+    "25-32": {"samples": 20,  "bleu_4": 1.32,  "chrf": 21.67, "rouge_l_f1": 17.64, "mean_reference_words": 26.85, "mean_generation_words": 16.05},
 }
-PGAT_V1_DEV_OVERALL = {"bleu_4": 9.79, "chrf": 29.19}
+PGAT_V1_DEV_OVERALL = {"bleu_4": 9.79, "chrf": 29.19, "rouge_l_f1": 26.68}
+
+# Which metrics have per-bin baseline points to overlay.
+BASELINE_METRICS_WITH_BINS: set[str] = {"bleu_4", "chrf", "rouge_l_f1"}
 
 BIN_ORDER = ("1-6", "7-12", "13-18", "19-24", "25-32")
+
+# Metric key -> display label.
+METRIC_LABELS: dict[str, str] = {
+    "bleu_1": "BLEU-1 (corpus)",
+    "bleu_2": "BLEU-2 (corpus)",
+    "bleu_3": "BLEU-3 (corpus)",
+    "bleu_4": "BLEU-4 (corpus)",
+    "chrf": "chrF (corpus)",
+    "rouge_l_f1": "ROUGE-L F1",
+}
 
 
 @dataclass
 class SeriesPoint:
     bin_label: str
-    bleu_4: float
-    chrf: float
+    values: dict[str, float]
     mean_ref_words: float
     mean_gen_words: float
     samples: int
 
 
-def collect_series(metrics: dict, baseline: dict[str, dict[str, float]] | None = None) -> tuple[list[SeriesPoint], list[SeriesPoint] | None]:
+def collect_series(
+    metrics: dict,
+    baseline: dict[str, dict[str, float]] | None = None,
+) -> tuple[list[SeriesPoint], list[SeriesPoint] | None]:
     ours: list[SeriesPoint] = []
     for label in BIN_ORDER:
         b = metrics["bins"].get(label)
@@ -60,8 +80,7 @@ def collect_series(metrics: dict, baseline: dict[str, dict[str, float]] | None =
         ours.append(
             SeriesPoint(
                 bin_label=label,
-                bleu_4=float(b["bleu_4"]),
-                chrf=float(b["chrf"]),
+                values={key: float(b[key]) for key in METRIC_LABELS if key in b},
                 mean_ref_words=float(b["mean_reference_words"]),
                 mean_gen_words=float(b["mean_generation_words"]),
                 samples=int(b["samples"]),
@@ -77,8 +96,7 @@ def collect_series(metrics: dict, baseline: dict[str, dict[str, float]] | None =
             baseline_points.append(
                 SeriesPoint(
                     bin_label=label,
-                    bleu_4=float(b["bleu_4"]),
-                    chrf=float(b["chrf"]),
+                    values={key: float(b[key]) for key in METRIC_LABELS if key in b},
                     mean_ref_words=float(b["mean_reference_words"]),
                     mean_gen_words=float(b["mean_generation_words"]),
                     samples=int(b["samples"]),
@@ -87,45 +105,70 @@ def collect_series(metrics: dict, baseline: dict[str, dict[str, float]] | None =
     return ours, baseline_points
 
 
-def plot_length_curve(
+def _plot_metric_panel(
+    ax,
+    ours: list[SeriesPoint],
+    baseline: list[SeriesPoint] | None,
+    metric_key: str,
+    candidate_label: str,
+    baseline_label: str,
+) -> None:
+    x = list(range(len(ours)))
+    xtick_labels = [f"{p.bin_label}\n(n={p.samples})" for p in ours]
+    ours_y = [p.values.get(metric_key, 0.0) for p in ours]
+    ax.plot(
+        x, ours_y,
+        marker="o", linewidth=2.4, label=candidate_label, color="#1f77b4",
+    )
+    if baseline is not None and metric_key in BASELINE_METRICS_WITH_BINS:
+        base_y = [p.values.get(metric_key, 0.0) for p in baseline]
+        ax.plot(
+            x, base_y,
+            marker="s", linewidth=2.0, linestyle="--",
+            label=baseline_label, color="#d62728",
+        )
+    ax.set_xlabel("reference length bin (whitespace tokens)")
+    ax.set_ylabel(METRIC_LABELS[metric_key])
+    ax.set_title(METRIC_LABELS[metric_key])
+    ax.set_xticks(x)
+    ax.set_xticklabels(xtick_labels, fontsize=8)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(bottom=0)
+    ax.legend(loc="best", fontsize=9)
+
+
+def plot_headline(
     ours: list[SeriesPoint],
     baseline: list[SeriesPoint] | None,
     output_path: Path,
-    candidate_label: str = "pgat-length",
-    baseline_label: str = "PGAT-v1",
+    candidate_label: str,
+    baseline_label: str,
 ) -> None:
-    fig, (ax_bleu, ax_chrf) = plt.subplots(1, 2, figsize=(12, 4.5), sharex=True)
-
-    x = list(range(len(BIN_ORDER)))
-    xtick_labels = [f"{lbl}\n(n={p.samples})" for lbl, p in zip(BIN_ORDER, ours)]
-
-    ours_bleu = [p.bleu_4 for p in ours]
-    ours_chrf = [p.chrf for p in ours]
-
-    ax_bleu.plot(x, ours_bleu, marker="o", linewidth=2.4, label=candidate_label, color="#1f77b4")
-    ax_chrf.plot(x, ours_chrf, marker="o", linewidth=2.4, label=candidate_label, color="#1f77b4")
-
-    if baseline is not None:
-        base_bleu = [p.bleu_4 for p in baseline]
-        base_chrf = [p.chrf for p in baseline]
-        ax_bleu.plot(x, base_bleu, marker="s", linewidth=2.0, linestyle="--", label=baseline_label, color="#d62728")
-        ax_chrf.plot(x, base_chrf, marker="s", linewidth=2.0, linestyle="--", label=baseline_label, color="#d62728")
-
-    for ax, ylab, title in (
-        (ax_bleu, "BLEU-4 (corpus)", "BLEU-4 by reference length"),
-        (ax_chrf, "chrF (corpus)", "chrF by reference length"),
-    ):
-        ax.set_xlabel("reference length bin (whitespace tokens)")
-        ax.set_ylabel(ylab)
-        ax.set_title(title)
-        ax.set_xticks(x)
-        ax.set_xticklabels(xtick_labels)
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc="best")
-        ax.set_ylim(bottom=0)
-
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), sharex=True)
+    for ax, key in zip(axes, ("bleu_4", "chrf", "rouge_l_f1")):
+        _plot_metric_panel(ax, ours, baseline, key, candidate_label, baseline_label)
     fig.suptitle(
         "Length-stratified translation quality on PHOENIX14T DEV",
+        fontsize=13,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_all_metrics(
+    ours: list[SeriesPoint],
+    baseline: list[SeriesPoint] | None,
+    output_path: Path,
+    candidate_label: str,
+    baseline_label: str,
+) -> None:
+    metric_keys = ["bleu_1", "bleu_2", "bleu_3", "bleu_4", "chrf", "rouge_l_f1"]
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8.5), sharex=True)
+    for ax, key in zip(axes.flat, metric_keys):
+        _plot_metric_panel(ax, ours, baseline, key, candidate_label, baseline_label)
+    fig.suptitle(
+        "Length-stratified translation quality on PHOENIX14T DEV — all metrics",
         fontsize=13,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.96))
@@ -137,20 +180,15 @@ def plot_length_calibration(
     ours: list[SeriesPoint],
     baseline: list[SeriesPoint] | None,
     output_path: Path,
-    candidate_label: str = "pgat-length",
-    baseline_label: str = "PGAT-v1",
+    candidate_label: str,
+    baseline_label: str,
 ) -> None:
     fig, ax = plt.subplots(figsize=(7, 5.5))
-
     ref_ours = [p.mean_ref_words for p in ours]
     gen_ours = [p.mean_gen_words for p in ours]
     ax.plot(
-        ref_ours,
-        gen_ours,
-        marker="o",
-        linewidth=2.4,
-        label=candidate_label,
-        color="#1f77b4",
+        ref_ours, gen_ours,
+        marker="o", linewidth=2.4, label=candidate_label, color="#1f77b4",
     )
     for p in ours:
         ax.annotate(
@@ -158,21 +196,15 @@ def plot_length_calibration(
             xy=(p.mean_ref_words, p.mean_gen_words),
             xytext=(4, 4),
             textcoords="offset points",
-            fontsize=8,
-            color="#1f77b4",
+            fontsize=8, color="#1f77b4",
         )
-
     if baseline is not None:
         ref_base = [p.mean_ref_words for p in baseline]
         gen_base = [p.mean_gen_words for p in baseline]
         ax.plot(
-            ref_base,
-            gen_base,
-            marker="s",
-            linewidth=2.0,
-            linestyle="--",
-            label=baseline_label,
-            color="#d62728",
+            ref_base, gen_base,
+            marker="s", linewidth=2.0, linestyle="--",
+            label=baseline_label, color="#d62728",
         )
         for p in baseline:
             ax.annotate(
@@ -180,19 +212,16 @@ def plot_length_calibration(
                 xy=(p.mean_ref_words, p.mean_gen_words),
                 xytext=(4, -12),
                 textcoords="offset points",
-                fontsize=8,
-                color="#d62728",
+                fontsize=8, color="#d62728",
             )
-
-    # Diagonal (perfect length calibration).
     limit = max(
         max(p.mean_ref_words for p in ours) if ours else 0,
         max(p.mean_gen_words for p in ours) if ours else 0,
         max(p.mean_ref_words for p in baseline) if baseline else 0,
         max(p.mean_gen_words for p in baseline) if baseline else 0,
     ) + 2.0
-    ax.plot([0, limit], [0, limit], color="grey", linewidth=1.0, linestyle=":", label="reference = generation")
-
+    ax.plot([0, limit], [0, limit], color="grey", linewidth=1.0, linestyle=":",
+            label="reference = generation")
     ax.set_xlabel("mean reference length (words)")
     ax.set_ylabel("mean generated length (words)")
     ax.set_title("Generation length vs reference length (by bin)")
@@ -211,7 +240,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--candidate-label", type=str, default="pgat-length")
     parser.add_argument("--baseline-label", type=str, default="PGAT-v1")
-    parser.add_argument("--no-baseline", action="store_true", help="Omit the PGAT-v1 comparison lines.")
+    parser.add_argument("--no-baseline", action="store_true")
     return parser.parse_args()
 
 
@@ -223,36 +252,27 @@ def main() -> None:
 
     ours, base = collect_series(metrics, baseline)
 
-    curve_path = args.output_dir / "length_curve_bleu_chrf.png"
+    headline_path = args.output_dir / "length_curve_headline.png"
+    all_path = args.output_dir / "length_curve_all.png"
     calibration_path = args.output_dir / "length_calibration.png"
 
-    plot_length_curve(
-        ours=ours,
-        baseline=base,
-        output_path=curve_path,
-        candidate_label=args.candidate_label,
-        baseline_label=args.baseline_label,
-    )
-    plot_length_calibration(
-        ours=ours,
-        baseline=base,
-        output_path=calibration_path,
-        candidate_label=args.candidate_label,
-        baseline_label=args.baseline_label,
-    )
+    plot_headline(ours, base, headline_path, args.candidate_label, args.baseline_label)
+    plot_all_metrics(ours, base, all_path, args.candidate_label, args.baseline_label)
+    plot_length_calibration(ours, base, calibration_path, args.candidate_label, args.baseline_label)
 
-    overall_line = ""
     overall = metrics.get("overall", {})
+    print(f"headline    -> {headline_path}")
+    print(f"all metrics -> {all_path}")
+    print(f"calibration -> {calibration_path}")
     if overall:
-        overall_line = (
+        print(
             f"overall: BLEU-4={overall.get('bleu_4', 0):.2f} "
             f"chrF={overall.get('chrf', 0):.2f} "
-            f"(baseline PGAT-v1: BLEU-4={PGAT_V1_DEV_OVERALL['bleu_4']}, chrF={PGAT_V1_DEV_OVERALL['chrf']})"
+            f"ROUGE-L={overall.get('rouge_l_f1', 0):.2f} "
+            f"(baseline PGAT-v1: BLEU-4={PGAT_V1_DEV_OVERALL['bleu_4']}, "
+            f"chrF={PGAT_V1_DEV_OVERALL['chrf']}, "
+            f"ROUGE-L={PGAT_V1_DEV_OVERALL['rouge_l_f1']})"
         )
-    print(f"length curve   -> {curve_path}")
-    print(f"length calibr. -> {calibration_path}")
-    if overall_line:
-        print(overall_line)
 
 
 if __name__ == "__main__":
