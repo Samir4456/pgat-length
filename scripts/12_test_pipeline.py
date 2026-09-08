@@ -62,8 +62,8 @@ def main() -> None:
         # 3) motion
         run([python, str(PROJECT_ROOT / "scripts" / "03_extract_motion.py"),
              "--split", "test", "--allow-full"])
-        # 4) text (both splits are cheap; --all rebuilds test if missing)
-        run([python, str(PROJECT_ROOT / "scripts" / "04_build_text.py"), "--all"])
+        # 4) text (train/dev already cached; --all does not include test)
+        run([python, str(PROJECT_ROOT / "scripts" / "04_build_text.py"), "--split", "test"])
 
     # 5) evaluate on TEST with the v2 configs.
     run([
