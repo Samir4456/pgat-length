@@ -3,6 +3,17 @@
 > Pose-Guided Adaptive Tokenization with Variable-Length Prefix and mBART
 > Decoder for Gloss-Free Sign Language Translation on PHOENIX14T.
 
+**Last verified against code/configs: 2026-09-08** (frozen-architecture TEST
+run, §9.6). Sections 1–7 (problem, design principles, math, encoder,
+alignment head, mBART integration) describe the architecture as-built and
+have not changed since first written. Sections 8 and 9 originally described
+the *initial* config design before any training run completed; §8.7 and
+§9.6–9.7 now document the *tuned v2 configs actually used* and the actual
+results, respectively — read those over the earlier subsections where they
+disagree. `docs/ARCHITECTURE.pdf` was generated from an earlier version of
+this file and is stale; regenerate it from this Markdown before citing the
+PDF.
+
 This document is the single reference for everything about the architecture:
 theory, mathematics, design justifications, and the file/module in the codebase
 that implements each concept. Read top-to-bottom if you are new. Skim by
@@ -18,7 +29,7 @@ section header if you know what you're looking for.
 6. [Video-text alignment head (stage 1)](#6-video-text-alignment-head-stage-1)
 7. [mBART translation with variable-length visual prefix (stage 2)](#7-mbart-translation-with-variable-length-visual-prefix-stage-2)
 8. [Training procedure](#8-training-procedure)
-9. [Evaluation methodology](#9-evaluation-methodology)
+9. [Evaluation methodology](#9-evaluation-methodology) (§9.6 has the actual TEST results, §9.7 the honest interpretation)
 10. [Code reference — where each concept lives](#10-code-reference)
 11. [Storage layout and reproducibility](#11-storage-layout-and-reproducibility)
 12. [References](#12-references)
@@ -341,9 +352,11 @@ $$
 [\mathbf{h}_1, \dots, \mathbf{h}_K] = \operatorname{TransformerEncoder}([\mathbf{z}_1, \dots, \mathbf{z}_K] + \operatorname{PE}, \; \text{mask} = \neg \text{valid})
 $$
 
-Config: 4 layers, 8 heads, 512 hidden dim, 2048 FFN dim, 0.1 dropout, GELU,
-pre-norm. Padded (invalid) segments are masked in self-attention and zeroed
-after the encoder.
+Config: 4 layers, 8 heads, 512 hidden dim, 2048 FFN dim, GELU, pre-norm.
+Padded (invalid) segments are masked in self-attention and zeroed after the
+encoder. Dropout was raised from 0.1 (initial `model.yaml`) to **0.2** in
+`model_v2.yaml` to fight TRAIN overfitting; the checkpoint that produced the
+results in §9.6 used 0.2. See §8.7 for the full v1→v2 config diff.
 
 ### 5.6 Articulator biased attention
 
@@ -519,8 +532,10 @@ the work; no code change needed for different $\pi$ per sample.
 ### 7.5 Loss
 
 Standard next-token cross-entropy with label smoothing $\epsilon_\text{ls} = 0.1$
-over the German target tokens. The visual prefix positions are not supervised
-(no labels emitted at those positions):
+(initial `translation.yaml`; raised to **0.15** in `translation_v2.yaml`, the
+config used for the checkpoint in §9.6) over the German target tokens. The
+visual prefix positions are not supervised (no labels emitted at those
+positions):
 
 $$
 \mathcal{L}_\text{translation} = -\sum_{t=1}^{T} \sum_{w \in V} \tilde y_{t,w} \log p(y_t = w \mid y_{<t}, \mathbf{H}_\text{enc})
@@ -546,21 +561,23 @@ Beam search with:
 ### 8.1 Two-stage design
 
 1. **Stage 1 — Alignment**: freeze mBART encoder, train PGAT encoder + text
-   projection with InfoNCE + hard negatives. 20 epochs.
+   projection with InfoNCE + hard negatives. 20 epochs (initial design;
+   see §8.7 — the checkpoint actually used ran 30 epochs with patience 8).
 2. **Stage 2 — Translation**: warm-start PGAT encoder from best.pt of stage 1,
    full fine-tune of mBART + PGAT + projection (last 2 DINOv2 blocks
-   unfrozen), CE with label smoothing. 20 epochs.
+   unfrozen), CE with label smoothing. 20 epochs (initial design; see §8.7).
 
 ### 8.2 Optimizer
 
-AdamW with:
+AdamW with (initial design, `alignment.yaml` / `translation.yaml`; see §8.7
+for the tuned v2 values actually used):
 
 - Global weight decay 0.01
 - Warmup ratio 0.05
 - Cosine schedule
 - Gradient clip 1.0
 
-### 8.3 Per-module learning rates (stage 2)
+### 8.3 Per-module learning rates (stage 2, initial design)
 
 Different modules learn at different speeds:
 
@@ -574,22 +591,62 @@ Different modules learn at different speeds:
 Rationale: PGAT is small and randomly initialized; needs higher LR. mBART is
 pretrained and large; smaller LR to avoid destroying its prior. DINOv2 is
 large and pretrained on natural images; very small LR for gentle adaptation.
+**§8.7 lowers the mBART/PGAT/projection LRs further in the tuned run.**
 
 ### 8.4 Batch and precision
 
-- Micro-batch 3, gradient accumulation 8 → effective batch 24.
+- Micro-batch 3, gradient accumulation 8 → effective batch 24 (stage 2).
+  Stage 1 (v2) uses micro-batch 16, grad accum 8 → effective batch 128.
 - bf16 mixed precision.
 - Gradient checkpointing on both PGAT and mBART.
 - Peak VRAM target < 40 GiB on A6000 (48 GiB available).
 
 ### 8.5 Early stopping
 
-- Stage 1 metric: `v2t_recall_at_1` (max), patience 4.
-- Stage 2 metric: `dev_loss` (min), patience 4.
+- Stage 1 metric: `v2t_recall_at_1` (max), patience 4 (initial); **8** in v2.
+- Stage 2 metric: `dev_loss` (min), patience 4 (initial); **6** in v2.
 
 Only `best.pt` is saved (no `last.pt`) to fit the 100 GB storage quota.
 mBART and DINOv2 base weights are NOT written into checkpoints (they live
 in the HF cache and are shared across runs).
+
+### 8.7 v2 tuning pass (the configs that actually produced the §9.6 results)
+
+The initial `alignment.yaml` / `translation.yaml` / `model.yaml` design (§8.1
+– §8.5) is still in the repo as the original design record. After a first
+translation run, we tuned three configs to fight TRAIN overfitting (7,096
+samples is small for a 610M-parameter full fine-tune) and to raise decoder
+capacity. **All results in §9.6 use these v2 configs**, not the §8.1–§8.5
+defaults.
+
+`model_v2.yaml` diff vs `model.yaml`:
+
+- `encoder.dropout`: 0.1 → **0.2**
+
+`alignment_v2.yaml` diff vs `alignment.yaml`:
+
+- `training.micro_batch`: 8 → 16 (effective batch 64 → 128)
+- `training.learning_rate`: 5e-5 → 2e-5
+- `training.warmup_ratio`: 0.05 → 0.10
+- `training.epochs`: 20 → 30
+- `early_stopping.patience`: 4 → 8
+- `checkpoint.best_filename`: `alignment_best.pt` → `alignment_v2_best.pt`
+
+`translation_v2.yaml` diff vs `translation.yaml`:
+
+- `training.weight_decay`: 0.01 → 0.03
+- `training.encoder_learning_rate` / `decoder_learning_rate`: 3e-5 → 2e-5
+- `training.warmup_ratio`: 0.05 → 0.10
+- `training.label_smoothing`: 0.1 → 0.15
+- `training.epochs`: 20 → 25
+- `early_stopping.patience`: 4 → 6
+- `warm_start.alignment_checkpoint` points at `alignment_v2_best.pt`
+- `checkpoint.best_filename`: `translation_best.pt` → `translation_v2_best.pt`
+
+Generation for the frozen §9.6 evaluation used `num_beams = 3`,
+`length_penalty = 0.7` (tuned via `scripts/11_generation_sweep.py`; the
+§7.6 default of 1.0 was not used for the reported run),
+`no_repeat_ngram_size = 3`.
 
 ### 8.6 Data augmentation (train only)
 
@@ -651,18 +708,105 @@ claim but strengthens the safety story.
 
 ### 9.5 Baselines
 
-External comparison targets (all scored under the *same* SacreBLEU-13a scorer
-where possible):
+External comparison targets, scored under the *same* SacreBLEU-13a /
+CHRF / ROUGE-L scorer used for pgat-length (`src/pgat_length/evaluation/metrics.py`
+in this repo, ported from the `pg-adaptor` scorer used to score PGAT-v1):
 
-| Baseline | Method | TEST BLEU-4 (local scorer) | Note |
-|---|---|---:|---|
-| NSLT | seq-to-seq CNN + RNN, HF reproduction | 6.00 | Old, weak reference |
-| TSPNet | Temporal semantic pyramid, official inference | 12.98 | Cache-order caveat |
-| GASLT | Gloss attention for gloss-free (CVPR 2023) | ~15–16 (paper) | Cluster reproduction pending |
-| GFSLT-VLP | Align-then-generate with mBART | ~21–22 (paper) | Not our beat target |
+| Baseline | Method | TEST BLEU-4 | TEST chrF | TEST ROUGE-L | Note |
+|---|---|---:|---:|---:|---|
+| NSLT | seq-to-seq CNN + RNN, HF reproduction | 6.00 | 30.19 | 27.03 | HF model card uses an older/different BLEU style; this is the locally rescored number |
+| PGAT-v1 | Fixed 28-token prefix, Qwen2.5-3B + LoRA (`pg-adaptor` repo) | 9.99 | 29.35 | 26.19 | Predecessor project's frozen-architecture TEST run |
+| TSPNet | Temporal semantic pyramid, official inference | 12.98 | 35.39 | 29.87 | Official reference file order does not exactly match local cache — official-release comparison, not perfectly same-cache |
+| GASLT | Gloss attention for gloss-free (CVPR 2023) | ~15–16 (paper) | — | — | Cluster reproduction pending (`external_baselines/GASLT`, blocked on processed `data/pht` bundle) |
+| GFSLT-VLP | Align-then-generate with mBART | ~21–22 (paper) | — | — | Not attempted; not our beat target |
 
-**Thesis target: overall TEST BLEU-4 ≥ 17 with a flatter length curve than
-TSPNet/NSLT/GASLT on the 13+ token bins.**
+**Original thesis target (pre-run): overall TEST BLEU-4 ≥ 17 with a flatter
+length curve than TSPNet/NSLT/GASLT on the 13+ token bins.** See §9.6 for
+what the frozen-architecture run actually achieved against this target.
+
+### 9.6 Frozen-architecture TEST results (2026-09-08)
+
+Checkpoint: `translation_v2_best.pt` (warm-started from `alignment_v2_best.pt`,
+configs `model_v2.yaml` + `translation_v2.yaml`, §8.7). Generation:
+`num_beams=3, length_penalty=0.7, no_repeat_ngram_size=3`. 642 TEST samples,
+scored once under the §9.1 protocol. TEST was not re-touched for tuning
+after this run.
+
+Overall:
+
+| Metric | Value |
+|---|---:|
+| BLEU-1 | 26.70 |
+| BLEU-2 | 7.93 |
+| BLEU-3 | 4.33 |
+| BLEU-4 | 7.20 |
+| chrF | 32.42 |
+| ROUGE-L F1 | 22.93 |
+| Exact match | 1.25% |
+
+Five-bin:
+
+| Bin | Samples | BLEU-4 | chrF | ROUGE-L F1 |
+|---|---:|---:|---:|---:|
+| 1–6 | 42 | 12.40 | 40.66 | 31.76 |
+| 7–12 | 286 | 11.58 | 34.98 | 26.06 |
+| 13–18 | 220 | 3.50 | 29.20 | 18.72 |
+| 19–24 | 78 | 3.98 | 32.69 | 18.48 |
+| 25–32 | 16 | 6.23 | 34.68 | 23.53 |
+
+Against PGAT-v1 TEST (same table structure, from the `pg-adaptor` review
+package):
+
+| Bin | PGAT-v1 BLEU-4 | pgat-length v2 BLEU-4 | PGAT-v1 chrF | pgat-length v2 chrF |
+|---|---:|---:|---:|---:|
+| 1–6 | 16.88 | 12.40 | 41.09 | 40.66 |
+| 7–12 | 17.39 | 11.58 | 35.74 | 34.98 |
+| 13–18 | 5.03 | 3.50 | 25.69 | 29.20 |
+| 19–24 | 4.63 | 3.98 | 24.28 | 32.69 |
+| 25–32 | 3.98 | 6.23 | 25.49 | 34.68 |
+
+### 9.7 Honest interpretation
+
+**This does not support "pgat-length v2 beats PGAT-v1."** Overall BLEU-4
+(7.20) is below PGAT-v1 (9.99, a ~28% relative drop) and overall ROUGE-L
+(22.93) is below PGAT-v1 (26.19). The original thesis target (BLEU-4 ≥ 17)
+was **not met**.
+
+**This is useful diagnostic evidence for the length-sensitivity claim,
+independent of the overall-BLEU regression.** Two confounded changes were
+made simultaneously relative to PGAT-v1: (a) the variable-length prefix
+($\pi \in [24,44]$ vs. fixed 28), and (b) the decoder swap (Qwen2.5-3B+LoRA
+→ mBART-large-cc25 fully fine-tuned, §2.2). The chrF five-bin comparison
+isolates a pattern consistent with (a) working as intended even though (b)
+costs raw fluency:
+
+- On the two longest bins (19–24, 25–32) pgat-length v2's chrF is **higher**
+  than PGAT-v1's by a wide margin (32.69 vs 24.28, and 34.68 vs 25.49), and
+  BLEU-4 on the longest bin (25–32) is also higher (6.23 vs 3.98) despite
+  losing on every other bin.
+- The short/long chrF ratio (mean of bins 1–6,7–12 divided by mean of bins
+  13–18,19–24,25–32) is 0.851 for pgat-length v2 vs 0.655 for PGAT-v1 —
+  markedly flatter, reproducing the flattening pattern first seen on DEV
+  (§ predecessor project) on a clean, same-split TEST comparison.
+- On the two shortest bins pgat-length v2 is worse than PGAT-v1 on every
+  metric, which is consistent with the smaller/differently-tuned decoder
+  losing fluency headroom on cases where PGAT-v1's larger Qwen backbone
+  had an easier time, not with the variable-length prefix hurting short
+  sentences specifically.
+
+**This should not be presented as final proof that variable-length prefixes
+fix the length cliff.** The decoder swap is a real confound and the overall
+BLEU-4 regression is a genuine, unresolved cost. The defensible claim for
+the thesis is narrower: *a variable-length, pose-guided visual prefix
+measurably flattens the length-vs-quality curve relative to a fixed-length
+prefix, on the same TEST split, even when paired with a materially weaker
+decoder* — which motivates future work (larger/frozen decoder + variable
+prefix, or LoRA on a bigger backbone) rather than closing the question.
+
+Reproduce this table: `scripts/08_compare_five_bin.py --candidate
+outputs/predictions_test_v2/test_metrics.json`; plot:
+`scripts/10_plot_length_curve.py --metrics
+outputs/predictions_test_v2/test_metrics.json`.
 
 ---
 
@@ -675,11 +819,11 @@ pgat-length/
 ├── configs/                          # YAML config for each stage
 │   ├── data.yaml                     # Paths, splits, quota policy
 │   ├── features.yaml                 # Sampling, pose, spatial, motion
-│   ├── model.yaml                    # PGAT dims, K bounds, mBART dims
-│   ├── alignment.yaml                # Stage 1: contrastive
-│   ├── translation.yaml              # Stage 2: mBART fine-tune
+│   ├── model.yaml / model_v2.yaml    # PGAT dims, K bounds, mBART dims (v2: dropout 0.2)
+│   ├── alignment.yaml / alignment_v2.yaml    # Stage 1: contrastive (v2: tuned, §8.7)
+│   ├── translation.yaml / translation_v2.yaml # Stage 2: mBART fine-tune (v2: tuned, §8.7)
 │   └── augmentation.yaml             # Train-only augmentation
-├── slurm/                            # ASL sbatch templates
+├── slurm/                            # ASL sbatch templates (build_features, train_*, evaluate, test)
 ├── src/pgat_length/
 │   ├── data/                         # Dataset, sampling, collator
 │   ├── features/                     # Feature extraction (plans, spatial, motion, text)
@@ -687,7 +831,7 @@ pgat-length/
 │   ├── training/                     # Alignment + translation loops
 │   ├── evaluation/                   # Metrics, five-bin, bootstrap
 │   └── pose/                         # MediaPipe extractor + landmark constants
-├── scripts/                          # Numbered CLI entrypoints (01..08)
+├── scripts/                          # Numbered CLI entrypoints (01..12, §10.3)
 ├── tests/                            # Regression tests
 └── docs/
     └── ARCHITECTURE.md               # this file
@@ -705,13 +849,13 @@ pgat-length/
 | Shard contracts | 4.5 | `features/shards.py::PLAN_ARRAY_CONTRACTS` |
 | DINOv2 spatial extractor | 5.1 | `features/dino_extractor.py::Dinov2SpatialExtractor` |
 | TimeSformer motion extractor | 5.3 | `features/timesformer_extractor.py::TimesformerMotionExtractor` |
-| PGAT tokenizer (fusion + temporal) | 5.2 – 5.5 | `models/tokenizer.py` (to write) |
+| PGAT tokenizer (fusion + temporal) | 5.2 – 5.5 | `models/tokenizer.py` |
 | Six-source gate | 5.4 | `models/tokenizer.py` (fusion block) |
 | Articulator attention | 5.6 | `models/articulator.py` |
 | Global summary attention | 5.7 | `models/global_summary.py` |
 | Alignment model + InfoNCE | 6 | `models/alignment.py` |
 | PGAT → mBART projection | 7.2 | `models/projection.py::PgatMbartProjection` |
-| Full translation model | 7 | `models/translation.py` (to write) |
+| Full translation model | 7 | `models/translation.py` |
 | Alignment training loop | 8.1 (stage 1) | `training/alignment_loop.py` |
 | Translation training loop | 8.1 (stage 2) | `training/translation_loop.py` |
 | Best-only checkpoint saving | 8.5 | `training/checkpoint.py` |
@@ -719,18 +863,39 @@ pgat-length/
 | Metrics (BLEU/chrF/ROUGE) | 9.1 | `evaluation/metrics.py` |
 | Five-bin analysis | 9.2 | `evaluation/five_bin.py` |
 | Paired bootstrap | 9.3 | `evaluation/bootstrap.py` |
-| Full pipeline CLIs | all | `scripts/01..08_*.py` |
+| v2 tuned configs | 8.7 | `configs/*_v2.yaml` |
+| TEST-gated pipeline | 9.6 | `scripts/12_test_pipeline.py`, `slurm/test.sbatch` |
+| Length-penalty / beam sweep | 8.7 | `scripts/11_generation_sweep.py` |
+| Length-curve plot | 9.6 | `scripts/10_plot_length_curve.py` |
+| Re-score without regenerating | — | `scripts/09_rescore.py` |
+| Full pipeline CLIs | all | `scripts/01..12_*.py` |
 
 ### 10.3 Numbered scripts (build order)
 
 1. `scripts/01_build_plans.py` — pose-informed variable-K plans.
 2. `scripts/02_extract_spatial.py` — DINOv2 crops per segment view.
 3. `scripts/03_extract_motion.py` — TimeSformer motion clips.
-4. `scripts/04_build_text.py` — mBART tokenizer cache (to write).
+4. `scripts/04_build_text.py` — mBART tokenizer cache. `--all` covers
+   **train and dev only by design** (TEST is locked, §4.1); pass
+   `--split test` explicitly, which is what `scripts/12_test_pipeline.py`
+   does.
 5. `scripts/05_train_alignment.py` — contrastive stage.
 6. `scripts/06_train_translation.py` — mBART fine-tune.
-7. `scripts/07_evaluate_dev.py` — DEV generation + metrics.
+7. `scripts/07_evaluate_dev.py` — DEV/TEST generation + metrics (`--split`,
+   `--allow-test` gate for TEST, `--length-penalty`/`--num-beams` for
+   generation sweeps).
 8. `scripts/08_compare_five_bin.py` — length-stratified comparison table.
+9. `scripts/09_rescore.py` — re-score an existing predictions JSONL
+   (overall + five-bin) without regenerating.
+10. `scripts/10_plot_length_curve.py` — length-curve plot from a
+    `*_metrics.json` file.
+11. `scripts/11_generation_sweep.py` — grid search over
+    (length_penalty, num_beams) on a fixed checkpoint; used to pick the
+    §9.6 generation settings.
+12. `scripts/12_test_pipeline.py` — safety-gated TEST pipeline: refuses to
+    run without `--allow-test`, builds TEST features (plans → spatial →
+    motion → text), then evaluates with the v2 configs. Prefer
+    `sbatch slurm/test.sbatch` over running it directly.
 
 Each script has a resume-safe design: it fingerprints the config that
 produced its output and refuses to reuse artifacts built from a different
@@ -749,15 +914,20 @@ $HOME/pgat-cache/manifest/                  cached manifest  <1 MB
 $HOME/pgat-cache/features/plans/            plan shards      ~5 MB
 $HOME/pgat-cache/features/spatial/          DINOv2 shards    ~500 MB
 $HOME/pgat-cache/features/motion/           TimeSformer      ~200 MB
-$HOME/pgat-cache/features/text/             mBART tokens     ~5 MB
+$HOME/pgat-cache/features/text/             mBART tokens (train/dev/test) ~5 MB
 $HOME/pgat-cache/hf/                        base weights     ~4 GB
-$HOME/outputs/alignment/                    alignment_best.pt ~500 MB
-$HOME/outputs/translation/                  translation_best.pt ~1.5 GB
-$HOME/outputs/predictions/                  jsonl             <10 MB
+$HOME/outputs/alignment/                    alignment_v2_best.pt ~500 MB
+$HOME/outputs/translation/                  translation_v2_best.pt ~1.5 GB
+$HOME/outputs/predictions/                  DEV predictions jsonl+metrics <10 MB
+$HOME/outputs/predictions_test_v2/          TEST predictions + test_metrics.json <10 MB
 $HOME/logs/                                 sbatch stdout     ~200 MB
                                             —
                                             Total: ~37 GB (headroom ~63 GB)
 ```
+
+Note: the *v1* config filenames (`alignment_best.pt`, `translation_best.pt`)
+are what §8.1–§8.5 describe; the actual checkpoints on disk are the v2 ones
+above (§8.7) since that's the tuning pass that was run to completion.
 
 ### 11.2 Reproducibility fingerprints
 
@@ -862,6 +1032,9 @@ titles have been reconstructed from working notes and may need refinement.
    next to it.
 4. Skim sections 6, 7, 8 for the training story.
 5. Read section 9 in full — evaluation is where the thesis is defended.
+   §9.6–9.7 have the actual frozen-architecture TEST results and the honest
+   read on what they do and don't support; start there if you just want the
+   bottom line.
 6. Use section 10 as a jump table.
 7. Cite from section 12 when writing the thesis.
 
