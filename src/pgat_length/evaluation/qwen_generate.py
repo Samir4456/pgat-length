@@ -321,10 +321,8 @@ def generate_qwen(
             print(f"  gen {i+1}/{len(loader)}  ({elapsed:.1f}s)", flush=True)
 
     _rewrite_jsonl(predictions_path, rows)
-    predictions = [r["prediction"] for r in rows]
-    references = [r["reference"] for r in rows]
-    overall = corpus_metrics(predictions=predictions, references=references)
-    bins = per_bin_metrics(predictions=predictions, references=references)
+    overall = corpus_metrics(rows)
+    bins = per_bin_metrics(rows)
     summary: dict[str, Any] = {
         "split": split,
         "checkpoint": str(checkpoint_path),
