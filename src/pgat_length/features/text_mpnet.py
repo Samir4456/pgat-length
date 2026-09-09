@@ -70,14 +70,17 @@ def save_mpnet_cache(path: Path, uids: list[str], embeddings: np.ndarray, config
         "embedding_dim": config.embedding_dim,
         "normalize": config.normalize,
     }
+    # Numpy's savez_compressed auto-appends .npz if the filename does not
+    # already end in .npz, so pass an open file handle to bypass that rename.
     tmp_path = path.with_suffix(path.suffix + ".partial")
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        tmp_path,
-        uids=np.asarray(uids),
-        embeddings=embeddings.astype(np.float32),
-        meta=np.asarray(json.dumps(meta, ensure_ascii=False, sort_keys=True)),
-    )
+    with open(tmp_path, "wb") as handle:
+        np.savez_compressed(
+            handle,
+            uids=np.asarray(uids),
+            embeddings=embeddings.astype(np.float32),
+            meta=np.asarray(json.dumps(meta, ensure_ascii=False, sort_keys=True)),
+        )
     _os.replace(tmp_path, path)
 
 

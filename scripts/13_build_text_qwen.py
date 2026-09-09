@@ -106,17 +106,20 @@ def process_split(
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Numpy's savez_compressed auto-appends .npz if the filename does not
+    # already end in .npz, so pass an open file handle to bypass that rename.
     tmp_path = output_path.with_suffix(output_path.suffix + ".partial")
-    np.savez_compressed(
-        tmp_path,
-        uids=np.asarray(uids),
-        prompt_input_ids=prompt_ids.astype(np.int32),
-        prompt_attention_mask=prompt_mask.astype(np.bool_),
-        target_input_ids=np.stack(target_ids_list, axis=0).astype(np.int32),
-        target_attention_mask=np.stack(target_mask_list, axis=0).astype(np.bool_),
-        target_length=np.asarray(target_len_list, dtype=np.int32),
-        meta=np.asarray(json.dumps(meta, ensure_ascii=False, sort_keys=True)),
-    )
+    with open(tmp_path, "wb") as handle:
+        np.savez_compressed(
+            handle,
+            uids=np.asarray(uids),
+            prompt_input_ids=prompt_ids.astype(np.int32),
+            prompt_attention_mask=prompt_mask.astype(np.bool_),
+            target_input_ids=np.stack(target_ids_list, axis=0).astype(np.int32),
+            target_attention_mask=np.stack(target_mask_list, axis=0).astype(np.bool_),
+            target_length=np.asarray(target_len_list, dtype=np.int32),
+            meta=np.asarray(json.dumps(meta, ensure_ascii=False, sort_keys=True)),
+        )
     os.replace(tmp_path, output_path)
     print(f"Created: {output_path}")
     return {"split": split, "samples": len(uids), "reused": False, "path": str(output_path)}
