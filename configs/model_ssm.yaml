@@ -1,0 +1,55 @@
+# PGAT-length variable-length prefix + bidirectional SSM adapter over
+# temporal tokens + mBART decoder.
+#
+# Diff vs model_v2.yaml: adds an `ssm_adapter` block. When that block is
+# present and enabled, PgatMbartTranslationModel applies a bidirectional
+# selective SSM (Mamba-flavored, pure PyTorch) to the temporal-token
+# sequence immediately after the tokenizer, with a residual + LayerNorm.
+# Articulator and global-summary heads then see the SSM-enriched tokens.
+# Everything else is unchanged so the experiment isolates the adapter.
+
+encoder:
+  spatial_dim: 768
+  motion_dim: 768
+  pose_descriptor_dim: 64
+  articulator_views: 4
+  hidden_dim: 512
+  transformer_layers: 4
+  transformer_heads: 8
+  ffn_dim: 2048
+  dropout: 0.2
+
+  variable_prefix:
+    frames_per_token: 8
+    k_temporal_min: 12
+    k_temporal_max: 32
+
+  articulator_queries: 8
+  global_queries: 4
+
+  dinov2:
+    model_name: facebook/dinov2-base
+    unfreeze_last_n_blocks: 2
+    unfreeze_learning_rate: 1.0e-5
+
+decoder:
+  model_name: facebook/mbart-large-cc25
+  hidden_dim: 1024
+  freeze_encoder: false
+  freeze_decoder: false
+
+projection:
+  bias: true
+  layernorm: true
+
+ssm_adapter:
+  enabled: true
+  d_model: 512                       # must match encoder.hidden_dim
+  d_state: 16                        # state dim per channel (Mamba default)
+  d_conv: 4                          # depthwise conv kernel
+  expand: 2                          # inner dim = expand * d_model
+  num_layers: 1                      # per direction (fwd + bwd)
+  dropout: 0.1
+  dt_min: 0.001
+  dt_max: 0.1
+  residual_scale: 1.0

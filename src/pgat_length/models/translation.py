@@ -20,8 +20,9 @@ Generation:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch import nn
@@ -31,6 +32,7 @@ from transformers import MBartForConditionalGeneration
 from pgat_length.models.articulator import BiasedArticulatorAttention
 from pgat_length.models.global_summary import GlobalSummaryAttention
 from pgat_length.models.projection import PgatMbartProjection
+from pgat_length.models.ssm_adapter import build_ssm_adapter
 from pgat_length.models.tokenizer import EncoderConfig, PgatVariableTokenizer
 
 
@@ -43,6 +45,9 @@ class TranslationConfig:
     global_queries: int
     hf_cache: Path | None = None
     label_smoothing: float = 0.1
+    # Optional bidirectional SSM adapter over PGAT temporal tokens.
+    # None or falsy means "no adapter" -- backward-compatible with v2 configs.
+    ssm_adapter: dict[str, Any] | None = None
 
 
 class PgatMbartTranslationModel(nn.Module):
@@ -51,6 +56,9 @@ class PgatMbartTranslationModel(nn.Module):
         self.config = config
         # Encoder side (same building blocks as alignment).
         self.tokenizer = PgatVariableTokenizer(config.encoder)
+        # Optional bidirectional SSM adapter applied to temporal tokens
+        # immediately after the tokenizer. None when disabled.
+        self.ssm_adapter = build_ssm_adapter(config.ssm_adapter)
         self.articulator = BiasedArticulatorAttention(
             hidden_dim=config.encoder.hidden_dim,
             num_queries=config.articulator_queries,
@@ -89,6 +97,11 @@ class PgatMbartTranslationModel(nn.Module):
             pose_motion=batch["pose_motion"],
             segment_valid=batch["segment_valid"],
         )
+        # Optional bidirectional SSM adapter: enriches temporal tokens with
+        # long-range context before the articulator / global-summary heads.
+        # Includes its own residual + LayerNorm.
+        if self.ssm_adapter is not None:
+            temporal_tokens = self.ssm_adapter(temporal_tokens, mask=segment_valid)
         art_tokens = self.articulator(
             temporal_tokens=temporal_tokens,
             segment_valid=segment_valid,

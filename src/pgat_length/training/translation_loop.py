@@ -96,6 +96,9 @@ def build_model(
         global_queries=int(encoder_cfg_raw["global_queries"]),
         hf_cache=hf_cache,
         label_smoothing=label_smoothing,
+        # Optional bidirectional SSM adapter over temporal tokens. Falsy or
+        # missing means no adapter (v2 behavior). See configs/model_ssm.yaml.
+        ssm_adapter=model_cfg.get("ssm_adapter"),
     )
     return PgatMbartTranslationModel(translation_cfg)
 
@@ -132,7 +135,7 @@ def build_parameter_groups(
     """Split parameters into groups with per-module learning rates.
 
     Groups:
-    1. PGAT encoder side (tokenizer + articulator + global_summary) at pgat_lr.
+    1. PGAT encoder side (tokenizer + articulator + global_summary + ssm_adapter) at pgat_lr.
     2. Projection + mBART encoder at encoder_lr.
     3. mBART decoder + lm_head at decoder_lr.
     """
@@ -143,7 +146,12 @@ def build_parameter_groups(
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if name.startswith("tokenizer") or name.startswith("articulator") or name.startswith("global_summary"):
+        if (
+            name.startswith("tokenizer")
+            or name.startswith("articulator")
+            or name.startswith("global_summary")
+            or name.startswith("ssm_adapter")   # SSM adapter shares PGAT-side LR
+        ):
             pgat_params.append(param)
         elif name.startswith("projection") or name.startswith("mbart.model.encoder"):
             enc_params.append(param)
