@@ -1,0 +1,115 @@
+\setlength{\footskip}{8mm}
+
+\chapter{SSM-ADAPTER METHODOLOGY}
+
+\section{Research Approach}
+
+This study follows a design science and experimental research approach. It is design science because the main output is an artefact: SSM-Adapter, a bidirectional selective state-space temporal module for gloss-free sign language translation. It is experimental because the artefact is tested through controlled with-and-without comparisons on two independent backbones, ablations on the adapter's own hyperparameters, and a length-stratified evaluation designed to isolate the effect on the length cliff.
+
+This approach is appropriate because the research questions cannot be answered through literature review alone. The thesis must implement the adapter, integrate it into two backbones, and measure whether it reduces the length cliff under matched compute and matched scorers. Any observed change must be attributable to the adapter rather than to backbone-specific choices, which is why the design uses two independent gloss-free SLT systems.
+
+\section{System Overview}
+
+SSM-Adapter is a single module with two integration points. In its first integration, the adapter is inserted into pgat-length, which combines a pose-guided variable-length prefix encoder with an mBART decoder. In its second integration, the adapter is inserted into TSPNet, which combines pre-extracted I3D features at three temporal scales with a fairseq transformer decoder. In both cases the insertion point is the same in principle: the adapter sits between the visual-encoder output and the downstream language decoder, applied to the (batch, time, channel) token sequence before the decoder attends to it.
+
+\begin{figure}[h]
+\caption{SSM-Adapter methodology and integration into two independent backbones.}
+\centerline{\includegraphics[width=6.1in]{figures/method_placeholder.png}}
+\label{fig:methodology-outline}
+\small{\textit{Note.} The bidirectional selective state-space adapter is inserted at the visual-encoder output of each backbone as a residual module with pre-norm, forward and backward selective SSM blocks, dropout, and post-norm.}
+\end{figure}
+
+\section{Dataset and Input Representation}
+
+The study uses PHOENIX-2014T as the main benchmark. The input is a continuous German Sign Language video clip, and the target output is a German spoken-language sentence. The official train, validation, and test splits are used so that results remain comparable with prior work \citep{camgoz2018neural,camgoz2020sign}.
+
+For each backbone, the visual representation is what the backbone already consumes:
+\begin{itemize}
+    \item \textbf{pgat-length}: DINOv2 spatial features and TimeSformer motion features are extracted once and cached. A pose-guided tokenizer aggregates them into a variable-length prefix of length $K + 12$, where $K$ is the number of temporal segments and depends on the source video length (typical $K \in [12, 32]$).
+    \item \textbf{TSPNet}: pre-extracted I3D features at three temporal scales, each downloadable as three feature banks (\texttt{span=8\_stride=2}, \texttt{span=12\_stride=2}, \texttt{span=16\_stride=2}). At model time the three scales are projected to a common dimension, positional-embedded, and concatenated along the sequence axis.
+\end{itemize}
+
+\section{Backbone Choice}
+
+Two backbones are used for cross-backbone verification. The choice is not arbitrary; it isolates the adapter effect from backbone characteristics that are otherwise easy to confuse with it.
+
+\textbf{pgat-length} is our own implementation. It provides a modern denoising decoder (mBART-large-cc25) and a variable-length pose-guided prefix that already integrates spatial and motion information into a compact temporal sequence. Any adapter effect on top of pgat-length is measured against a competitive baseline in the range of BLEU-4 seven to eight on the PHOENIX-2014T test set.
+
+\textbf{TSPNet} \citep{li2020tspnet} is an independent published gloss-free SLT system built on fairseq. It uses pre-extracted I3D features, a temporal semantic pyramid, and a transformer decoder trained from scratch. Its published test BLEU-4 is $12.98$ under the local scorer, and its architecture is very different from pgat-length. If the adapter reduces the length cliff on both systems, the effect cannot be attributed to a specific backbone choice.
+
+\section{Preprocessing Pipeline}
+
+For pgat-length the feature banks (plans, spatial, motion, text) are already cached from prior work and do not need to be regenerated. For TSPNet, the I3D feature banks and the sentencepiece text bank are downloaded from the authors' Google Drive release and extracted to disk. All caching is done once so that both baseline and adapter runs consume identical features.
+
+\section{Adapter Design}
+
+The adapter is a bidirectional selective state-space module. Its input is a tensor of shape $[B, T, D]$ where $B$ is the batch size, $T$ is the sequence length, and $D$ is the model hidden dimension. Its output is a tensor of the same shape. The design is intentionally minimal: the adapter has an input LayerNorm, a forward selective SSM block, a backward selective SSM block (applied to the time-reversed input and then flipped back), a summation of the two directions, dropout, a residual to the original tokens, and an output LayerNorm.
+
+Each selective SSM block follows the Mamba structure \citep{gu2023mamba} with three changes designed for portability. First, all operations use standard PyTorch primitives; there is no dependency on the specialised Mamba CUDA kernel. Second, the sequential scan is written as a Python loop over the time axis, which is negligible overhead at the small sequence lengths seen in gloss-free SLT ($T \le 32$ for pgat-length, $T$ up to a few hundred for TSPNet's concatenated three-scale sequence). Third, the state matrix $A$ is initialised using the S4D-lin convention \citep{gu2022s4} for numerical stability with the input-dependent $\Delta$.
+
+For an input $x \in \mathbb{R}^{B \times T \times D}$, one selective block computes:
+
+\begin{equation}
+[x_{\text{ssm}}, z] = W_{\text{in}}(x), \quad y = \sigma(\mathrm{DWConv}_{d_{\text{conv}}}(x_{\text{ssm}})),
+\end{equation}
+
+\begin{equation}
+[\Delta, B, C] = W_{\text{proj}}(y), \quad \Delta = \mathrm{softplus}(\Delta + \Delta_{\text{bias}}),
+\end{equation}
+
+\begin{equation}
+\bar{A}_t = \exp(\Delta_t \odot A), \quad \bar{B}_t = \Delta_t \odot B_t,
+\end{equation}
+
+\begin{equation}
+h_t = \bar{A}_t \odot h_{t-1} + \bar{B}_t \odot y_t, \quad o_t = C_t \cdot h_t,
+\end{equation}
+
+\begin{equation}
+o = o + D \odot y, \quad o = o \odot \sigma(z), \quad \text{out} = W_{\text{out}}(o).
+\end{equation}
+
+The bidirectional wrapper computes $o_{\text{fwd}}$ on the input, $o_{\text{bwd}}$ on the time-reversed input flipped back to the original order, and returns $\mathrm{LayerNorm}(x + s \cdot (o_{\text{fwd}} + o_{\text{bwd}}))$ where $s$ is a residual scaling factor set to $1.0$ by default. Padded time positions contribute zero to state updates because their inputs are already zero, and they are masked to zero in the output before the residual sum.
+
+\begin{table}[h]
+\caption{Default SSM-Adapter hyperparameters and per-backbone parameter counts.}
+\begin{center}
+\begin{tabular}{p{1.8in}p{1.4in}p{1.4in}p{1.4in}}
+\toprule
+Hyperparameter & Symbol & pgat-length & TSPNet \\
+\midrule
+Model hidden dim & $D$ & 512 & 1024 \\
+State dim per channel & $d_{\text{state}}$ & 16 & 16 \\
+Depthwise conv kernel & $d_{\text{conv}}$ & 4 & 4 \\
+Inner-dim expansion & $\text{expand}$ & 2 & 2 \\
+Layers per direction & $L$ & 1 & 1 \\
+Dropout & $p$ & 0.1 & 0.1 \\
+Residual scale & $s$ & 1.0 & 1.0 \\
+Added trainable parameters & --- & 5.36 M & 21.20 M \\
+\bottomrule
+\end{tabular}
+\label{tab:adapter-hyperparams}
+\end{center}
+\end{table}
+
+\section{Integration into pgat-length}
+
+The adapter is inserted immediately after the pose-guided variable tokenizer produces temporal tokens $\mathbf{z}_1, \ldots, \mathbf{z}_K$ of shape $[B, K, 512]$, with a segment-validity mask of shape $[B, K]$. The adapter transforms these tokens with its own residual and LayerNorm; the downstream articulator attention, global-summary attention, projection to mBART hidden dim, and mBART encoder-decoder pipeline are unchanged. The adapter's parameters are added to the pgat-side learning-rate group. When the adapter is disabled by configuration, the model reduces byte-for-byte to the pgat-length v2 baseline.
+
+\section{Integration into TSPNet}
+
+The adapter is inserted immediately after the three-scale visual features are concatenated along the sequence dimension and before fairseq's canonical (T, B, C) transpose. TSPNet's transformer encoder, cross-level attention mask, decoder, and evaluation harness are unchanged. The adapter is enabled via a single new command-line flag (\texttt{--use-ssm-adapter}); without the flag the encoder is byte-equivalent to the published TSPNet baseline. This keeps baseline reproduction cleanly isolated from adapter evaluation.
+
+\section{Training Procedure}
+
+For pgat-length, translation training uses the existing v2 configuration: warm start from the alignment stage's best checkpoint, mBART full fine-tune with variable prefix, label-smoothed cross-entropy at $\epsilon = 0.15$, AdamW with per-module learning rates, warmup ratio $0.10$, cosine schedule, dropout $0.20$ in the temporal encoder, and early stopping on development loss with patience six. When the adapter is enabled, its parameters share the pgat-side learning-rate group and the rest of the schedule is unchanged.
+
+For TSPNet, training uses the authors' published run script: Adam with a fixed learning rate of $10^{-4}$, dropout $0.4$, label smoothing $0.1$, one encoder layer, reduce-on-plateau scheduler with patience eight, up to $200$ epochs with early stopping, BLEU-selected best checkpoint. The adapter is enabled via the added command-line flag; the rest of the script is unchanged so that any observed change is attributable to the adapter.
+
+\section{Cross-Backbone Verification}
+
+The critical design element is that the same module is integrated into two backbones under matched local scorers. After training, each system's development predictions are scored with the pgat-length evaluation harness so that BLEU-4, chrF, ROUGE-L, and five-bin length metrics are computed identically across all four runs (pgat-length baseline, pgat-length with adapter, TSPNet baseline, TSPNet with adapter). If the adapter reduces the length cliff on both backbones, the finding is attributed to the adapter rather than to backbone-specific characteristics. If it reduces the length cliff on one but not the other, the finding is a backbone-specific effect and is reported honestly.
+
+\section{Methodological Limitations}
+
+The methodology is deliberately scoped. It uses only two backbones for cross-backbone verification; a stronger claim of full backbone-agnostic behaviour would require additional systems, which is left as future work. It uses one dataset (PHOENIX-2014T); confirmation on a second dataset such as CSL-Daily is desirable but not part of the primary deliverable due to compute and dataset access constraints. The adapter itself uses a pure-PyTorch sequential scan for portability; wall-time comparisons against the specialised Mamba CUDA kernel are not part of the claim. Finally, the study reports translation quality metrics as the primary outcome; interpretability of the SSM's learned state dynamics is not a claim of this thesis.

@@ -1,0 +1,53 @@
+\chapter{INTRODUCTION}
+
+\section{Background of the Study}
+
+Sign language translation is a research problem at the intersection of computer vision, natural language processing, and accessibility. Its purpose is to translate signed videos into spoken-language text so that communication between Deaf or hard-of-hearing signers and hearing readers is supported \citep{camgoz2018neural,camgoz2020sign}. Gloss-free sign language translation is a stricter variant of the task: the model must translate directly from video to text without an intermediate gloss annotation. Removing gloss supervision is attractive because gloss annotation is expensive and language-specific, but it also removes a source of segment-level supervision that helped earlier gloss-based systems align visual content to output tokens \citep{zhou2023gloss}.
+
+A specific failure mode of gloss-free translation on the PHOENIX-2014T benchmark is length sensitivity. When outputs are grouped by reference word count, translation quality is high on short sentences and drops sharply once the reference exceeds twelve words. On our own PGAT-v1 reproduction the BLEU-4 score for the seven-to-twelve word bin is $17.39$ and the score for the thirteen-to-eighteen word bin is $5.03$, a drop of more than three-fold across a single bin boundary. The pattern is not unique to a single system; \citet{yazdani2026length} report the same trajectory across several published gloss-free systems and \citet{hamidullah2024sem} confirm it for their SEM-SLT model.
+
+\section{Motivation}
+
+The motivation for this study is both diagnostic and constructive. It is diagnostic because three separate architectural interventions on our local pipeline have failed to close the length cliff. Doubling visual evidence density (Source32) improved retrieval R@1 from $14.84$ to $17.92$ but did not improve translation quality. Introducing a variable-length visual prefix with a multilingual denoising decoder (pgat-length v2 with mBART) produced a flatter chrF curve at the cost of overall BLEU-4. Re-introducing a stronger causal decoder with parameter-efficient tuning (Qwen2.5-3B with QLoRA on the variable-length prefix) produced mode collapse: two distinct videos produced the identical output \emph{dabei bleibt es meist trocken}, and long-bin BLEU-4 fell below the mBART baseline. The common signature across the three failures is fluent, domain-plausible German that depends only weakly on the video.
+
+The motivation is constructive because this signature suggests a specific missing ingredient. All three tested interventions changed only the visual capacity, the prefix length, or the decoder size while preserving the same short-range temporal encoder over the visual token sequence. State-space models offer a lightweight mechanism for long-range temporal integration with linear complexity in the sequence length, and \citet{gu2022s4,gu2023mamba} have shown competitive performance against transformers on long-sequence video and audio understanding. The question this study asks is whether a small, backbone-agnostic state-space temporal adapter, inserted at the visual-encoder output without modifying the rest of the pipeline, can reduce the length cliff in gloss-free sign language translation.
+
+\section{Problem Statement}
+
+Gloss-free sign language translation on PHOENIX-2014T exhibits a reproducible length cliff on outputs longer than twelve words. This cliff has not been closed by a variety of architectural interventions targeting visual evidence, prefix length, or decoder size. Existing state-space models are proven for long-input classification and long-context language modelling, but they have not been applied to gloss-free SLT as a drop-in adapter across independent backbones under a controlled length-stratified evaluation.
+
+The problem addressed in this study is that no controlled empirical evidence exists for whether a small bidirectional state-space temporal adapter can flatten the length curve of a gloss-free SLT system in a backbone-agnostic way. Without such evidence, it is not possible to conclude whether the limitation on long-sentence gloss-free translation is fundamentally a temporal-integration limitation or a broader semantic-composition limitation, and it is not possible to release a drop-in module that future gloss-free systems can adopt without redesign.
+
+\section{Research Gap}
+
+State-space models, cross-attention adapters, and temporal integration modules have each been studied in related work. The gap is the lack of focused investigation into their integration for gloss-free SLT with a specific evaluation on the length-cliff phenomenon and a specific requirement of backbone-agnostic transfer.
+
+Two aspects of the gap are important for novelty positioning. First, existing state-space video work has largely reported classification metrics on datasets such as long-video benchmarks and dense video captioning, which measure different aspects of translation than the token-level fidelity a low-resource morphologically rich language such as German requires. Second, existing gloss-free SLT length-analysis work is descriptive rather than interventional: length sensitivity is measured across systems, but no single module is shown to reduce it consistently across systems. The proposed study fills both parts of the gap by treating the length cliff as an outcome to be reduced and by using two independent backbones so that the effect can be attributed to the adapter rather than to backbone characteristics.
+
+\section{Research Questions and Objectives}
+
+The main research question is: Can a small bidirectional selective state-space temporal adapter reduce the length cliff in gloss-free sign language translation in a backbone-agnostic manner?
+
+The study is guided by four sub-research questions:
+\begin{itemize}
+    \item RQ1: Does inserting a bidirectional selective state-space adapter at the visual-encoder output of the pgat-length pipeline (variable-length prefix + mBART) reduce the length cliff on PHOENIX-2014T?
+    \item RQ2: Does inserting the same adapter into TSPNet's I3D-plus-transformer pipeline reproduce the reduction in length sensitivity?
+    \item RQ3: Which adapter design choices matter most: state dimension, number of layers per direction, bidirectionality, or residual scaling?
+    \item RQ4: How does the adapter compare against a parameter-matched transformer adapter placed at the same insertion point?
+\end{itemize}
+
+The main research objective is to design and evaluate SSM-Adapter, a lightweight bidirectional selective state-space temporal adapter for gloss-free sign language translation, and to validate its effect on the length cliff across two independent gloss-free SLT backbones.
+
+The specific objectives are:
+\begin{itemize}
+    \item To design and implement a Mamba-flavoured bidirectional selective state-space temporal adapter in pure PyTorch, with no CUDA-kernel dependency, that is safe to insert as a residual module after any visual-encoder that produces a (batch, time, channel) sequence.
+    \item To integrate the adapter into two independent gloss-free SLT backbones, pgat-length (variable-length prefix + mBART decoder) and TSPNet (I3D features + fairseq transformer decoder), without modifying the backbone architecture or the training loss.
+    \item To evaluate each backbone with and without the adapter under matched compute, matched hyperparameters, and matched scorers, reporting five-bin length-stratified BLEU-4, chrF, and ROUGE-L.
+    \item To ablate state dimension, layer count, direction (bidirectional versus forward-only), residual scaling, and compare against a parameter-matched transformer adapter placed at the same insertion point.
+\end{itemize}
+
+\section{Scope and Limitations}
+
+The study is scoped to gloss-free translation from sign video to spoken-language text on PHOENIX-2014T. The adapter is a small module inserted at the visual-encoder output; backbones are not modified beyond the insertion. The two backbones used for cross-backbone verification are pgat-length with a variable-length pose-guided prefix and an mBART decoder, and TSPNet with I3D features and a fairseq transformer decoder. Both use the same PHOENIX-2014T official train, validation, and test splits under the split-discipline convention that test is used only for the final frozen-architecture run.
+
+The limitations are stated proactively. PHOENIX-2014T has limited signer diversity and a narrow weather-domain vocabulary; the study does not claim generalisation across sign languages or signing environments. Only two backbones are used for cross-backbone verification; a stronger claim of full backbone-agnostic behaviour would require additional systems, which is treated as future work rather than a project deliverable. The adapter's sequential state-space scan is implemented in pure PyTorch to avoid a CUDA-kernel build dependency, which is convenient but slower than the specialised Mamba kernel; wall time is not a claim of this thesis. Finally, the study focuses on translation-quality metrics; the adapter is not evaluated on inference latency or memory as primary criteria.

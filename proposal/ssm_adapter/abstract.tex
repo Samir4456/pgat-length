@@ -1,0 +1,18 @@
+\phantomsection
+\addcontentsline{toc}{chapter}{\bf ABSTRACT}
+
+\begin{center}
+    \large{\bf ABSTRACT}
+\end{center}
+
+Gloss-free sign language translation aims to translate sign language videos directly into spoken-language text without intermediate gloss annotations. On PHOENIX-2014T, all published gloss-free systems and multiple locally reproduced baselines exhibit the same failure mode: translation quality drops sharply once the target sentence exceeds twelve words. This ``length cliff'' has been reported across systems and is a persistent obstacle to practical use.
+
+Three architectural interventions were tested locally to identify the cause of the cliff. Doubling visual evidence density (Source32), introducing a variable-length visual prefix over a multilingual denoising decoder (pgat-length v2 with mBART), and re-introducing a stronger causal decoder with parameter-efficient tuning (Qwen2.5-3B with QLoRA) each failed to close the cliff. Manual inspection of the predictions revealed a consistent behaviour: fluent, domain-plausible German output that only weakly depends on the video. This pattern indicates that the limitation is not visual capacity, prefix length, or decoder size.
+
+This project proposes SSM-Adapter, a bidirectional selective state-space temporal adapter that inserts long-range temporal integration into an existing gloss-free translation pipeline without changing the backbone or the training signal. The adapter is Mamba-flavoured, implemented in pure PyTorch, and drops in as a residual module at the visual-encoder output. It is intentionally backbone-agnostic: the same module is inserted into two independent systems, pgat-length with an mBART decoder and TSPNet with an I3D-plus-transformer decoder, so that any observed effect can be attributed to the module rather than to backbone-specific choices.
+
+The study is planned on PHOENIX-2014T and will compare each backbone with and without the adapter under matched compute, matched hyperparameters, and matched scorers. The primary evaluation is a five-bin length-stratified analysis on chrF, BLEU-1 to BLEU-4, and ROUGE-L F1. Ablations cover state dimension, layer count, bidirectionality, and a parameter-matched transformer control. Statistical reporting uses paired bootstrap resampling.
+
+The expected contribution is to determine whether a small backbone-agnostic state-space adapter can measurably flatten the length cliff on gloss-free sign language translation and, if it can, to release the adapter as a drop-in module with an evaluation protocol suitable for cross-system verification.
+
+\textbf{Keywords:} Sign Language Translation, Gloss-Free Translation, State-Space Models, Mamba, Temporal Adapter, Length Sensitivity.
