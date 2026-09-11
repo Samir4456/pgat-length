@@ -383,21 +383,24 @@ class TransformerEncoderSign(FairseqEncoder):
         encoder_states = [] if return_all_hiddens else None
 
         x_lvls, encoder_padding_mask_lvls = [], []
-        for src_token_lv, encoder_padding_mask_lv in zip(src_tokens, encoder_padding_mask):
+        for lv_idx, (src_token_lv, encoder_padding_mask_lv) in enumerate(zip(src_tokens, encoder_padding_mask)):
             pseudo_src_tokens_lv = 1 - encoder_padding_mask_lv.int()
             x_lv, encoder_embedding_lv = self.forward_embedding(src_embed=src_token_lv, pseudo_src_tokens=pseudo_src_tokens_lv)
+
+            # Apply the SSM temporal adapter to level 0 only, BEFORE the concat.
+            # Level 0 is the finest temporal scale and the one that is sliced
+            # back out at the end of the encoder (x = x[:src_tokens[0].shape[1]]).
+            # Applying the adapter here keeps T short (level-0 length instead of
+            # concatenated multi-scale length) so the sequential scan is fast.
+            if lv_idx == 0 and self.ssm_adapter is not None:
+                valid_mask_lv = (~encoder_padding_mask_lv.bool()) if encoder_padding_mask_lv is not None else None
+                x_lv = self.ssm_adapter(x_lv, mask=valid_mask_lv)
+
             x_lvls.append(x_lv)
             encoder_padding_mask_lvls.append(encoder_padding_mask_lv)
 
         x = torch.cat(x_lvls, dim=1)                          # (B, T_concat, C)
         encoder_padding_mask = torch.cat(encoder_padding_mask_lvls, dim=1)
-
-        # Apply the SSM temporal adapter over the concatenated multi-scale
-        # sequence while x is still in (B, T, C). The mask is True for valid
-        # positions; encoder_padding_mask uses True for PAD so we invert it.
-        if self.ssm_adapter is not None:
-            valid_mask = (~encoder_padding_mask.bool()) if encoder_padding_mask is not None else None
-            x = self.ssm_adapter(x, mask=valid_mask)
 
         x = x.transpose(0, 1)                                 # (T, B, C) for fairseq
 
