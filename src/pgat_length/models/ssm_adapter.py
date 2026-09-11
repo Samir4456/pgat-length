@@ -4,8 +4,16 @@ Purpose: insert as a small module between the PGAT temporal tokenizer's output
 and the downstream articulator / global-summary heads (see
 `models/translation.py`). Adds long-range temporal context via selective SSM
 dynamics without changing the rest of the pipeline. Kept in pure PyTorch so
-there is no `mamba-ssm` CUDA-kernel build dependency; sequences are short
-(K in [12, 32]) so the sequential scan is negligible overhead.
+there is no `mamba-ssm` CUDA-kernel build dependency.
+
+Performance note: the scan is implemented as a custom `torch.autograd.Function`
+(`_SSMScanFunction`) with an explicit backward. This avoids autograd tracking
+one graph node per timestep, which was the cause of the fairseq TSPNet
+training hang at T >= ~100: the forward loop is still Python, but PyTorch
+sees the whole scan as a single op with O(1) graph depth, so backward is a
+matching Python loop rather than an O(T)-deep graph walk. On our short
+sequences this is fast enough for both pgat-length (T <= 32) and TSPNet
+(T ~ a few hundred).
 
 Design summary (per direction):
     x [B, T, D]
@@ -36,6 +44,96 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+
+class _SSMScanFunction(torch.autograd.Function):
+    """Selective SSM scan with an explicit backward.
+
+    Forward recurrence per (batch, channel, state):
+        h_t = A_bar_t * h_{t-1} + B_bar_t * y_t
+        o_t = sum_s C_t[s] * h_t[..., s]
+
+    Both the forward and backward run a Python loop over time. The critical
+    property is that PyTorch's autograd sees this as a single op: the graph
+    depth is O(1) instead of O(T), so training does not blow up on longer
+    sequences (T in the low hundreds) inside heavy loops like fairseq's.
+
+    Shapes:
+        A_bar:  [B, T, d_inner, d_state]  -- always in (0, 1]
+        B_bar:  [B, T, d_inner, d_state]  -- can be negative
+        y:      [B, T, d_inner]           -- per-channel input to the state
+        C:      [B, T, d_state]           -- per-state readout weights
+
+    Returns:
+        o: [B, T, d_inner]
+    """
+
+    @staticmethod
+    def forward(ctx, A_bar, B_bar, y, C):
+        Bsz, T, d_inner, d_state = A_bar.shape
+        device = A_bar.device
+        dtype = A_bar.dtype
+
+        h = torch.zeros(Bsz, d_inner, d_state, device=device, dtype=dtype)
+        hs = torch.empty(Bsz, T, d_inner, d_state, device=device, dtype=dtype)
+        o = torch.empty(Bsz, T, d_inner, device=device, dtype=dtype)
+
+        # y broadcasts to state dim via unsqueeze.
+        y_bcast = y.unsqueeze(-1)  # [B, T, d_inner, 1]
+
+        for t in range(T):
+            h = A_bar[:, t] * h + B_bar[:, t] * y_bcast[:, t]
+            hs[:, t] = h
+            o[:, t] = torch.einsum("bds,bs->bd", h, C[:, t])
+
+        ctx.save_for_backward(A_bar, B_bar, y, C, hs)
+        return o
+
+    @staticmethod
+    def backward(ctx, grad_o):
+        A_bar, B_bar, y, C, hs = ctx.saved_tensors
+        Bsz, T, d_inner, d_state = A_bar.shape
+        device = A_bar.device
+        dtype = A_bar.dtype
+
+        grad_A = torch.zeros_like(A_bar)
+        grad_B = torch.zeros_like(B_bar)
+        grad_y = torch.zeros_like(y)
+        grad_C = torch.zeros_like(C)
+
+        # dL/dh_t propagated backward.
+        grad_h = torch.zeros(Bsz, d_inner, d_state, device=device, dtype=dtype)
+
+        for t in range(T - 1, -1, -1):
+            # o_t = sum_s C_ts * h_ts -> dL/dC_ts += grad_o_t * h_ts
+            grad_C[:, t] = torch.einsum("bd,bds->bs", grad_o[:, t], hs[:, t])
+
+            # Add contribution from o_t through h_t:
+            # dL/dh_t += grad_o_t (outer) C_t
+            grad_h = grad_h + torch.einsum("bd,bs->bds", grad_o[:, t], C[:, t])
+
+            # h_t = A_bar_t * h_{t-1} + B_bar_t * y_t
+            # dL/dA_bar_t = grad_h_t * h_{t-1}    (h_{t-1} = hs[:, t-1] or zero)
+            # dL/dB_bar_t = grad_h_t * y_t
+            # dL/dy_t    = sum_s grad_h_t[..., s] * B_bar_t[..., s]  (broadcast on state)
+            # dL/dh_{t-1} = grad_h_t * A_bar_t
+            if t > 0:
+                h_prev = hs[:, t - 1]
+            else:
+                h_prev = torch.zeros_like(hs[:, 0])
+
+            grad_A[:, t] = grad_h * h_prev
+            grad_B[:, t] = grad_h * y[:, t].unsqueeze(-1)
+            grad_y[:, t] = (grad_h * B_bar[:, t]).sum(dim=-1)
+
+            grad_h = grad_h * A_bar[:, t]
+
+        return grad_A, grad_B, grad_y, grad_C
+
+
+def _ssm_scan(A_bar, B_bar, y, C):
+    """Convenience wrapper for the custom scan Function."""
+    return _SSMScanFunction.apply(A_bar, B_bar, y, C)
 
 
 @dataclass(frozen=True)
@@ -139,18 +237,10 @@ class _SelectiveSSMBlock(nn.Module):
         # B_bar: [B, T, d_inner, d_state]
         B_bar = delta.unsqueeze(-1) * B_param.unsqueeze(-2)
 
-        # Sequential scan.  T is small (<=32) so a Python loop is fine.
-        # h: [B, d_inner, d_state]
-        h = torch.zeros(B, self.d_inner, self.d_state, device=device, dtype=dtype)
-        outputs = []
-        # y_conv has shape [B, T, d_inner]; unsqueeze last dim for broadcast with h.
-        y_input = y_conv.unsqueeze(-1)               # [B, T, d_inner, 1]
-        for t in range(T):
-            h = A_bar[:, t] * h + B_bar[:, t] * y_input[:, t]  # [B, d_inner, d_state]
-            # Output: C_param[t] dot h across d_state.
-            y_t = torch.einsum("bds,bs->bd", h, C_param[:, t])  # [B, d_inner]
-            outputs.append(y_t)
-        y = torch.stack(outputs, dim=1)              # [B, T, d_inner]
+        # Sequential scan via custom autograd Function.
+        # Autograd sees this as O(1) graph depth (not O(T)) so training does
+        # not stall on longer sequences inside heavy loops like fairseq's.
+        y = _ssm_scan(A_bar, B_bar, y_conv, C_param)   # [B, T, d_inner]
 
         # Skip term.
         y = y + self.D.to(dtype) * y_conv
